@@ -36,7 +36,7 @@ public:
         {"03  Dial", "03  表盘", "03  錶盤", "03  文字盤", "03  다이얼"},
         {"04  Rail", "04  轨道", "04  軌道", "04  レール", "04  레일"},
         {"05  Stacked", "05  堆叠", "05  堆疊", "05  スタック", "05  스택"},
-        {"Per-HUD adjustment unavailable; uses Hyprland settings", "暂不支持单独调整，沿用 Hyprland 设置", "暫不支援單獨調整，沿用 Hyprland 設定", "個別調整は未対応。Hyprland の設定を使用", "개별 조정 미지원 · Hyprland 설정 사용"},
+        {"Per-HUD adjustment unavailable; uses compositor settings", "暂不支持单独调整，沿用合成器设置", "暫不支援單獨調整，沿用合成器設定", "個別調整は未対応。コンポジタの設定を使用", "개별 조정 미지원 · 컴포지터 설정 사용"},
         {"Monitor disk and memory", "监测磁盘和内存状态", "監測磁碟和記憶體狀態", "ディスクとメモリの状態を監視", "디스크와 메모리 상태 감시"},
         {"Redact notes, clipboard content and file names", "隐藏便笺、剪贴板和文件名称等隐私内容", "隱藏便箋、剪貼簿和檔案名稱等隱私內容", "メモ、クリップボード、ファイル名などを非表示", "메모, 클립보드 내용 및 파일 이름 숨기기"},
         {"Keep this layout?", "保留此界面布局？", "保留此介面配置？", "この配置を保存しますか？", "이 화면 배치를 유지할까요?"},

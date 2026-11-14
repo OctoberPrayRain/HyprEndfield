@@ -80,7 +80,7 @@ Item {
     Text {
         x: 120
         y: 96
-        text: "Hyprland"
+        text: appController.compositorName
         font.family: harmonyRegular.name
         font.pixelSize: 13
         color: "#80ffffff"

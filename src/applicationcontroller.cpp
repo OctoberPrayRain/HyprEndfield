@@ -15,22 +15,51 @@
 
 namespace
 {
-bool dispatchHyprlandSubmap(const QString &name)
+// The HUD needs exclusive key input while it is open: Esc backs out of an edit
+// before closing, and the side buttons are driven from the keyboard. Compositors
+// give a layer-shell client no way to say that through the protocol alone, so each
+// desktop integration asks its own compositor to stand down. The three paths are
+// independent: a session under none of them keeps the plain layer-shell behaviour
+// (only the focused-window Meta+Esc shortcut works; the global hotkey is bound by
+// the compositor itself, see README).
+
+bool runCompositorAction(const QString &program, const QStringList &arguments)
+{
+    const QString executable = QStandardPaths::findExecutable(program);
+    if (executable.isEmpty()) {
+        return false;
+    }
+    return QProcess::startDetached(executable, arguments);
+}
+
+// Hyprland: enter the hyprendfield submap while the HUD is open, so its own binds
+// apply instead of the global ones. "reset" leaves every submap. The Lua entry
+// point needs Hyprland 0.50+; older releases expose a dispatcher without it and
+// the call simply fails, which leaves the ordinary binds in place.
+bool setHyprlandSubmap(const QString &name)
 {
     if (qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")) {
         return false;
     }
-
-    const QString hyprctl = QStandardPaths::findExecutable(QStringLiteral("hyprctl"));
-    if (hyprctl.isEmpty()) {
-        return false;
-    }
-
     const QString expression = QStringLiteral(
         "hl.dispatch(hl.dsp.submap(\"%1\"))").arg(name);
-    return QProcess::startDetached(
-        hyprctl,
+    return runCompositorAction(QStringLiteral("hyprctl"),
         {QStringLiteral("eval"), expression});
+}
+
+// niri: its keybind table cannot be swapped at run time, but the compositor
+// honours zwp_keyboard_shortcuts_inhibit_v1 for layer-shell surfaces. The action
+// is a toggle and acts on the focused surface, so the answer is authoritative:
+// no socket, no niri, or no inhibit support all report failure and the mode stays
+// off.
+bool toggleNiriShortcutInhibit()
+{
+    if (qEnvironmentVariableIsEmpty("NIRI_SOCKET")) {
+        return false;
+    }
+    return runCompositorAction(QStringLiteral("niri"),
+        {QStringLiteral("msg"), QStringLiteral("action"),
+         QStringLiteral("toggle-keyboard-shortcuts-inhibit")});
 }
 }
 
@@ -49,7 +78,7 @@ ApplicationController::ApplicationController(QObject *parent)
 ApplicationController::~ApplicationController()
 {
     finishFocusRequest();
-    resetHyprlandSubmap();
+    resetCompositorMode();
 }
 
 bool ApplicationController::hudVisible() const
@@ -60,6 +89,23 @@ bool ApplicationController::hudVisible() const
 bool ApplicationController::hudOpen() const
 {
     return m_hudOpen;
+}
+
+QString ApplicationController::compositorName() const
+{
+    if (!qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")) {
+        return QStringLiteral("Hyprland");
+    }
+    if (!qEnvironmentVariableIsEmpty("NIRI_SOCKET")) {
+        return QStringLiteral("niri");
+    }
+    // wlroots-based compositors do not agree on one variable; the desktop entry
+    // name is the only common source, and it is capitalised inconsistently.
+    const auto desktop = qEnvironmentVariable("XDG_CURRENT_DESKTOP").section(':', 0, 0);
+    if (!desktop.isEmpty()) {
+        return desktop;
+    }
+    return QStringLiteral("Wayland");
 }
 
 void ApplicationController::setWindow(QQuickWindow *window)
@@ -73,6 +119,9 @@ void ApplicationController::setWindow(QQuickWindow *window)
             if (m_window->isActive()) {
                 m_receivedFocus = true;
                 finishFocusRequest();
+                // niri's shortcut inhibit only takes effect on the focused surface,
+                // so the request lives here rather than in showHud().
+                activateCompositorMode();
             } else {
                 QTimer::singleShot(250, this, &ApplicationController::checkFocus);
             }
@@ -204,14 +253,14 @@ void ApplicationController::showHud()
     setHudVisible(true);
     showAndFocusWindow();
     setHudOpen(true);
-    activateHyprlandSubmap();
+    activateCompositorMode();
 }
 
 void ApplicationController::hideHud()
 {
     if (m_settings) { m_settings->revertLayout(); m_settings->cancelBatteryPosition(); }
     finishFocusRequest();
-    resetHyprlandSubmap();
+    resetCompositorMode();
     setHudOpen(false);
 }
 
@@ -278,7 +327,7 @@ void ApplicationController::finishFileDrag()
 void ApplicationController::quitApplication()
 {
     finishFocusRequest();
-    resetHyprlandSubmap();
+    resetCompositorMode();
     setHudOpen(false);
     QCoreApplication::quit();
 }
@@ -324,17 +373,44 @@ void ApplicationController::setHudOpen(bool open)
     emit hudOpenChanged();
 }
 
-void ApplicationController::activateHyprlandSubmap()
+// Called once the HUD is mapped and has asked for focus. Hyprland's submap is
+// global, so it applies immediately. niri's shortcut inhibit acts on the focused
+// surface, so it waits for active() -- requesting it earlier would suppress the
+// keys of whatever window still had focus. Repeated calls are harmless: the
+// first success sets m_compositorModeActive and the rest return early, which
+// matters because niri's action is a toggle rather than an idempotent set.
+void ApplicationController::activateCompositorMode()
 {
-    m_hyprlandSubmapActive = dispatchHyprlandSubmap(QStringLiteral("hyprendfield"));
-}
-
-void ApplicationController::resetHyprlandSubmap()
-{
-    if (!m_hyprlandSubmapActive) {
+    if (m_compositorModeActive || !m_window) {
         return;
     }
+    if (!qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")) {
+        m_compositorModeActive = setHyprlandSubmap(QStringLiteral("hyprendfield"));
+        return;
+    }
+    if (!qEnvironmentVariableIsEmpty("NIRI_SOCKET")) {
+        if (m_window->isActive()) {
+            m_compositorModeActive = toggleNiriShortcutInhibit();
+        }
+    }
+}
 
-    dispatchHyprlandSubmap(QStringLiteral("reset"));
-    m_hyprlandSubmapActive = false;
+void ApplicationController::resetCompositorMode()
+{
+    if (!m_compositorModeActive) {
+        return;
+    }
+    m_compositorModeActive = false;
+    if (!qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")) {
+        setHyprlandSubmap(QStringLiteral("reset"));
+        return;
+    }
+    if (!qEnvironmentVariableIsEmpty("NIRI_SOCKET")) {
+        // The HUD is still mapped and normally still focused here; requestActivate
+        // just above keeps that true through the hide animation. If the compositor
+        // already moved focus elsewhere this toggles niri's state instead of ours,
+        // so the next open re-toggles it and the two entries cancel out; Mod+Escape
+        // (niri's own binding for this action) also restores the default at any time.
+        toggleNiriShortcutInhibit();
+    }
 }

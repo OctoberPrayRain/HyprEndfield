@@ -16,6 +16,10 @@ class ApplicationController final : public QObject
     Q_PROPERTY(bool hudOpen READ hudOpen NOTIFY hudOpenChanged)
     Q_PROPERTY(QString localUserName READ localUserName CONSTANT)
     Q_PROPERTY(QString layerScope READ layerScope NOTIFY layerScopeChanged)
+    // What the profile badge prints under its number: the session's compositor,
+    // taken from the same environment variables the integrations use, falling
+    // back to XDG_CURRENT_DESKTOP and then to "Wayland".
+    Q_PROPERTY(QString compositorName READ compositorName CONSTANT)
 
 public:
     explicit ApplicationController(QObject *parent = nullptr);
@@ -24,6 +28,7 @@ public:
     [[nodiscard]] bool hudVisible() const;
     [[nodiscard]] bool hudOpen() const;
     [[nodiscard]] QString localUserName() const { return qEnvironmentVariable("USER"); }
+    [[nodiscard]] QString compositorName() const;
     void setWindow(QQuickWindow *window);
     void setSettings(SettingsController *settings);
     bool listen(const QString &serverName);
@@ -49,8 +54,8 @@ private slots:
     void acceptConnection();
 
 private:
-    void activateHyprlandSubmap();
-    void resetHyprlandSubmap();
+    void activateCompositorMode();
+    void resetCompositorMode();
     void setHudVisible(bool visible);
     void setHudOpen(bool open);
     void finishFileDrag();
@@ -68,7 +73,7 @@ private:
     bool m_projectionActive = false;
     bool m_hudVisible = false;
     bool m_hudOpen = false;
-    bool m_hyprlandSubmapActive = false;
+    bool m_compositorModeActive = false;
     bool m_fileDragActive = false;
     bool m_fileDragFinished = false;
     bool m_fileDragDelivered = false;

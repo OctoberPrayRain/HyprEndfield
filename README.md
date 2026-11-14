@@ -4,7 +4,7 @@
 
 # 欢迎Linux用户提交Issue/Pr
 
-HyprEndfield 把 [EndfieldHUD](https://github.com/DDDuoDuo/EndfieldHUD) 的 HUD 界面移植到了 Linux。项目使用 C++20、Qt 6 / QML 和 LayerShellQt，开发与日常使用环境是 Arch Linux + Hyprland。
+HyprEndfield 把 [EndfieldHUD](https://github.com/DDDuoDuo/EndfieldHUD) 的 HUD 界面移植到了 Linux。项目使用 C++20、Qt 6 / QML 和 LayerShellQt，开发与日常使用环境是 Arch Linux + Hyprland，也支持 niri。
 
 表盘、卡片、动画和素材尽量沿用原项目，主表盘使用 EndfieldHUD 的分层三维资源。这个仓库目前只提供源码，没有安装包。
 
@@ -44,9 +44,13 @@ cmake --build build --target hyprendfield -j2
 
 程序还接受 `--show`、`--hide` 和 `--quit`。视频相关功能需要 FFmpeg、ffprobe 和 ffmpegthumbnailer；存储页面默认打开 Dolphin；部分文件粘贴操作需要 `wl-paste`。
 
-## Hyprland 配置
+## 桌面配置
 
-本项目使用 **Super + Esc** 打开或关闭 HUD。把下面的程序路径换成实际路径：
+HUD 是一个 layer-shell Overlay 图层，不占用普通窗口的焦点，所以全局热键必须由合成器绑定。本项目默认用 **Super + Esc** 打开或关闭 HUD。把下面的程序路径换成实际路径。
+
+显示和隐藏都走同一个 `--toggle` 命令，由单实例 socket 转交给已经在运行的进程。
+
+### Hyprland
 
 ```lua
 local hyprEndfield = "/absolute/path/to/HyprEndfield"
@@ -70,14 +74,47 @@ hl.layer_rule({
 })
 ```
 
-HUD 显示时会进入 `hyprendfield` 子键位配置，隐藏时恢复普通键位。子键位切换由 [applicationcontroller.cpp](src/applicationcontroller.cpp) 调用 Hyprland Lua 接口。
+HUD 显示时会进入 `hyprendfield` 子键位配置，隐藏时恢复普通键位。
+
+### niri
+
+niri 的键位表不能在运行时替换，但它支持 `zwp_keyboard_shortcuts_inhibit_v1`：HUD 拿到焦点后会向合成器申请抑制快捷键，隐藏时解除。所以只需要一条常驻绑定：
+
+```kdl
+binds {
+    Mod+Escape allow-inhibiting=false { spawn "/absolute/path/to/HyprEndfield" "--toggle"; }
+}
+```
+
+`allow-inhibiting=false` 让这条绑定在 HUD 抑制快捷键期间依然生效，否则开了 HUD 就关不掉了。
+
+如果这个组合键在你本地已经被占用（比如已经绑给 `toggle-keyboard-shortcuts-inhibit`），换成别的即可，比如 `Mod+Shift+Escape`。
+
+要让背景模糊生效，给这个图层命名空间加一条 layer-rule：
+
+```kdl
+layer-rule {
+    match namespace="^hyprendfield"
+    geometry-corner-radius 8
+    background-effect {
+        xray false
+        blur true
+    }
+}
+```
+
+快捷键抑制用的是 niri 的 `toggle-keyboard-shortcuts-inhibit` action，它是**焦点图层上的开关**，所以只在 HUD 确实获得焦点后才申请（见 `ApplicationController::activateCompositorMode`）。如果某次退出时焦点已经跑掉，这个开关会反向切一次，再打开时又会切回来，两次互相抵消；任何时候按 niri 自己绑定的这个 action 也能恢复默认。
+
+### 其它桌面
+
+两者都不匹配时，程序照常运行：layer-shell 部分走标准协议，全局热键需要你自己绑定，HUD 打开时快捷键不会被抑制（Esc 只在 HUD 有焦点时有效）。HUD 内的窗口列表信息（活动监视器）在不支持的桌面上会退化为只按进程名匹配。
 
 ## 还没有完成的内容
 
-- 只在 Arch Linux + Hyprland 上完整使用过，其他发行版和桌面需要自行适配。
+- 只在 Arch Linux 上完整使用过；Hyprland 与 niri 已适配，其它发行版和桌面需要自行适配。
 - 没有 X11 后端，也没有 DEB、RPM、AUR 或 Flatpak 包。
 - 当前播放只识别 SPlayer，歌词也使用 SPlayer 的专用接口。
-- “模糊程度”滑块暂不生效，实际模糊由 Hyprland 控制。
+- “模糊程度”滑块暂不生效，实际模糊由合成器的图层规则控制（Hyprland 的 `layer_rule`、niri 的 `layer-rule`）。
 - 影像加工不支持高光、阴影、视频贴纸和 HDR 视频导出。
 - 存储页面只有容量信息，没有文件分类、大文件查找、清理和分区操作。
 - 专注计时在隐藏 HUD 后继续运行，退出应用后不会恢复正在进行的计时。
@@ -90,7 +127,7 @@ HUD 显示时会进入 `hyprendfield` 子键位配置，隐藏时恢复普通键
 ### 程序和主界面
 
 - 程序入口、单实例、托盘和组件注册：[src/main.cpp](src/main.cpp)
-- Wayland 图层、显示隐藏、屏幕选择和 Hyprland 子键位：[src/applicationcontroller.cpp](src/applicationcontroller.cpp)、[qml/Main.qml](qml/Main.qml)
+- Wayland 图层、显示隐藏、屏幕选择和桌面集成（Hyprland 子键位 / niri 快捷键抑制）：[src/applicationcontroller.cpp](src/applicationcontroller.cpp)、[qml/Main.qml](qml/Main.qml)
 - 表盘、菜单和页面装载：[qml/WatchShell.qml](qml/WatchShell.qml)、[qml/MenuScene.qml](qml/MenuScene.qml)
 - 卡片和菜单几何：[qml/MenuPlane.qml](qml/MenuPlane.qml)、[qml/MenuCard.qml](qml/MenuCard.qml)、[qml/MenuTile.qml](qml/MenuTile.qml)、[qml/MenuGeometry.js](qml/MenuGeometry.js)
 - 三维表盘、相机、材质和着色器：[src/sourcedial.cpp](src/sourcedial.cpp)、[assets/watch-dial/](assets/watch-dial/)、[assets/watch/](assets/watch/)、[shaders/](shaders/)
@@ -132,7 +169,7 @@ HUD 显示时会进入 `hyprendfield` 子键位配置，隐藏时恢复普通键
 更换桌面时，先看这三个位置：
 
 - HUD 覆盖、屏幕和快捷键模式：[src/applicationcontroller.cpp](src/applicationcontroller.cpp)
-- Hyprland 窗口信息：[src/activitycollector.cpp](src/activitycollector.cpp)
+- 桌面窗口信息（Hyprland `hyprctl clients` / niri `niri msg windows`）：[src/activitycollector.cpp](src/activitycollector.cpp)
 - Wayland 剪贴板：[src/clipboardcontroller.cpp](src/clipboardcontroller.cpp)
 
 更换默认软件时，对应入口如下：
@@ -141,7 +178,7 @@ HUD 显示时会进入 `hyprendfield` 子键位配置，隐藏时恢复普通键
 - Dolphin：[src/storagecontroller.cpp](src/storagecontroller.cpp)、[src/fileshelfcontroller.cpp](src/fileshelfcontroller.cpp)
 - Bash：[src/terminalsession.cpp](src/terminalsession.cpp)
 - PulseAudio 后端：[src/audiocontroller.cpp](src/audiocontroller.cpp)
-- 名片中的 `ARCH` 和 `Hyprland`：[qml/MenuBadge.qml](qml/MenuBadge.qml)
+- 名片中的 `ARCH` 和合成器名称（`appController.compositorName`）：[qml/MenuBadge.qml](qml/MenuBadge.qml)
 
 ## 数据位置
 

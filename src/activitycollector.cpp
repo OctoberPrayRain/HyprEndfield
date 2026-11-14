@@ -39,6 +39,37 @@ QByteArray query(const QString &program, const QStringList &args, int timeout) {
     if (!process.waitForFinished(timeout)) { process.kill(); process.waitForFinished(250); return {}; }
     return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0 ? process.readAllStandardOutput() : QByteArray();
 }
+
+// The compositor's open windows as (pid, application id), which is what maps a
+// process to its desktop entry. Hyprland reports initialClass/class on `clients`;
+// niri reports app_id on `windows`. Both are one JSON array per call and are
+// only consulted when the corresponding integration is present, so a session
+// runs one helper script, not both.
+QList<QPair<int, QString>> compositorWindows() {
+    QList<QPair<int, QString>> result;
+    if (!qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")) {
+        const auto bytes = query(QStandardPaths::findExecutable(QStringLiteral("hyprctl")),
+            {QStringLiteral("clients"), QStringLiteral("-j")}, 800);
+        for (const auto &value : QJsonDocument::fromJson(bytes).array()) {
+            const auto window = value.toObject();
+            result.append({window.value("pid").toInt(),
+                window.value("initialClass").toString(window.value("class").toString())});
+        }
+        return result;
+    }
+    if (!qEnvironmentVariableIsEmpty("NIRI_SOCKET")) {
+        const auto bytes = query(QStandardPaths::findExecutable(QStringLiteral("niri")),
+            {QStringLiteral("msg"), QStringLiteral("--json"), QStringLiteral("windows")}, 800);
+        // niri's app_id is the Wayland application id: desktop entries usually match
+        // it directly, and the comparison below also accepts app_id + ".desktop".
+        for (const auto &value : QJsonDocument::fromJson(bytes).array()) {
+            const auto window = value.toObject();
+            result.append({window.value("pid").toInt(), window.value("app_id").toString()});
+        }
+        return result;
+    }
+    return result;
+}
 QList<QVariant> rates(const QMap<QString, Counters> &now, const QMap<QString, Counters> &old, double elapsed) {
     if (now.isEmpty() || now.keys() != old.keys() || elapsed <= 0 || elapsed > 15) return {{}, {}};
     double a = 0, b = 0;
@@ -245,12 +276,14 @@ void Collector::collectApplications(Reading &reading) {
             seeds[pid] = "HyprEndfield"; identities["HyprEndfield"] = {"HyprEndfield", "HyprEndfield", {}, {}};
         }
     }
+    // Window classes name the desktop entry a process belongs to, which the
+    // binary name alone cannot do (Electron apps, browsers, Flatpak). Each
+    // compositor reports its own shape; both are reduced here to pid + app id.
     if (m_paths.helpers) {
-        const auto bytes = query(QStandardPaths::findExecutable("hyprctl"), {"clients", "-j"}, 800);
-        for (const auto &value : QJsonDocument::fromJson(bytes).array()) {
-            const auto window = value.toObject(); const int pid = window.value("pid").toInt();
+        for (const auto &window : compositorWindows()) {
+            const int pid = window.first;
             if (!reading.processes.contains(pid)) continue;
-            const QString appClass = window.value("initialClass").toString(window.value("class").toString());
+            const QString appClass = window.second;
             if (appClass.isEmpty()) continue;
             for (const auto &desktop : m_desktops) {
                 if (desktop.windowClass.compare(appClass, Qt::CaseInsensitive) == 0 || desktop.id.compare(appClass + ".desktop", Qt::CaseInsensitive) == 0) {

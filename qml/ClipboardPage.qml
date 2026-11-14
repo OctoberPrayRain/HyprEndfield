@@ -3,7 +3,7 @@ import "ModuleNumbering.js" as ModuleNumbering
 import "Appearance.js" as Appearance
 import QtQuick.Shapes
 
-// EndfieldHUD ClipboardCanvas, MOD-03, backed by Hyprland's Wayland clipboard.
+// EndfieldHUD ClipboardCanvas, MOD-03, backed by the wlr-data-control clipboard.
 Item {
     id: clipboardPage
     width: 590; height: 510; focus: presented

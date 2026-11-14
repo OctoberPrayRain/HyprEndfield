@@ -503,7 +503,7 @@ Item {
                 width: 580
                 title: modelData.title
                 enabled: modelData.key !== "blur"
-                sublabel: modelData.key === "blur" ? qsTr("暂不支持单独调整，沿用 Hyprland 设置") : modelData.key === "facility" ? qsTr("监测磁盘、内存和硬件温度") : modelData.key === "lowPower" ? qsTr("表盘动画 30 Hz，关闭模糊与持续环境动画") : modelData.key === "recording" ? qsTr("隐藏便笺、剪贴板和文件名称等隐私内容") : ""
+                sublabel: modelData.key === "blur" ? qsTr("暂不支持单独调整，沿用合成器设置") : modelData.key === "facility" ? qsTr("监测磁盘、内存和硬件温度") : modelData.key === "lowPower" ? qsTr("表盘动画 30 Hz，关闭模糊与持续环境动画") : modelData.key === "recording" ? qsTr("隐藏便笺、剪贴板和文件名称等隐私内容") : ""
                 mode: modelData.mode
                 value: root.dropdownValue(modelData.key)
                 artwork: modelData.key === "centerLogo" ? "image://settings-logos/" + (root.settings.centerLogoIndex === 4 ? "custom/" + encodeURIComponent(root.settings.customLogo) : root.settings.centerLogoIndex) : ""
