@@ -9,6 +9,8 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network DBus WebSockets Qml Quick OpenGL ShaderTools Concurrent Sql Multimedia Pdf WebEngineWidgets)
 find_package(LayerShellQt REQUIRED)
+# 仅 KDE 下用到的桌面级快捷键；非 KDE 桌面不注册。
+find_package(KF6GlobalAccel REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
 pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm>=0.3.3)
@@ -325,6 +327,7 @@ target_link_libraries(hyprendfield PRIVATE
     Qt6::Multimedia
     Qt6::Pdf
     LayerShellQt::Interface
+    KF6::GlobalAccel
     PkgConfig::PULSE
     PkgConfig::VTERM
     PkgConfig::WAYLAND_CLIENT

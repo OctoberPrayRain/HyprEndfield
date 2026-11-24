@@ -14,6 +14,8 @@
 #include <QApplication>
 #include <QMenu>
 #include <QSystemTrayIcon>
+#include <QAction>
+#include <KGlobalAccel>
 #include "watchanimationcontroller.hpp"
 #include "sourcedial.hpp"
 #include "batterycontroller.hpp"
@@ -223,6 +225,17 @@ int main(int argc, char *argv[])
     SettingsController settings;
     ApplicationController controller;
     controller.setSettings(&settings);
+    // Hyprland 用 submap、niri 用快捷键抑制来接管按键；KDE 两者都没有，
+    // 因此把 Alt+Esc 注册成桌面级快捷键，开机自启后也能直接开关 HUD。
+    if (qEnvironmentVariable("XDG_CURRENT_DESKTOP").contains(QStringLiteral("KDE"), Qt::CaseInsensitive)
+        || qEnvironmentVariable("XDG_SESSION_DESKTOP").compare(QStringLiteral("KDE"), Qt::CaseInsensitive) == 0) {
+        auto *toggleShortcut = new QAction(&application);
+        toggleShortcut->setObjectName(QStringLiteral("toggle-hud"));
+        toggleShortcut->setText(QObject::tr("打开或关闭 HUD"));
+        KGlobalAccel::self()->setGlobalShortcut(toggleShortcut,
+            QList<QKeySequence>{QKeySequence(QStringLiteral("Alt+Esc"))});
+        QObject::connect(toggleShortcut, &QAction::triggered, &controller, &ApplicationController::toggleHud);
+    }
     QMenu trayMenu;
     trayMenu.addAction(QObject::tr("打开 / 关闭 HUD"), &controller, &ApplicationController::toggleHud);
     trayMenu.addAction(QObject::tr("退出"), &controller, &ApplicationController::quitApplication);
