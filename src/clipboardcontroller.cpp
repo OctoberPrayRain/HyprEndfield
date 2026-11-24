@@ -2,10 +2,12 @@
 #include "clipboardcontroller.hpp"
 
 #include "wlr-data-control-unstable-v1-client-protocol.h"
+#include "ext-data-control-v1-client-protocol.h"
 
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QDateTime>
+
 #include <QFileInfo>
 #include <QImage>
 #include <QImageReader>
@@ -124,30 +126,173 @@ struct ClipboardController::Entry
     bool pinned = false;
 };
 
-struct ClipboardController::Backend : QObject
+// wlr-data-control 与 ext-data-control 的请求/事件几乎一一对应（仅
+// primary_selected/primary_selection 事件名不同），因此用一层 traits 隔离协议
+// 前缀，运行期按合成器导出的 global 选择：先试 wlroots 系，再试 KWin 的 ext。
+
+namespace {
+namespace clipboard_dc {
+
+struct Wlr
+{
+    using Manager = zwlr_data_control_manager_v1;
+    using Device = zwlr_data_control_device_v1;
+    using Source = zwlr_data_control_source_v1;
+    using Offer = zwlr_data_control_offer_v1;
+    using DeviceListener = zwlr_data_control_device_v1_listener;
+    using OfferListener = zwlr_data_control_offer_v1_listener;
+    using SourceListener = zwlr_data_control_source_v1_listener;
+
+    static constexpr const char *managerName = "zwlr_data_control_manager_v1";
+
+    static Manager *bindManager(wl_registry *registry, uint32_t name, uint32_t version)
+    {
+        return static_cast<Manager *>(wl_registry_bind(registry, name,
+            &zwlr_data_control_manager_v1_interface, std::min(version, 2u)));
+    }
+    static Device *getDevice(Manager *manager, wl_seat *seat)
+    {
+        return zwlr_data_control_manager_v1_get_data_device(manager, seat);
+    }
+    static void addDeviceListener(Device *device, const DeviceListener *listener, void *data)
+    {
+        zwlr_data_control_device_v1_add_listener(device, listener, data);
+    }
+    static void destroyDevice(Device *device) { zwlr_data_control_device_v1_destroy(device); }
+    static Source *createSource(Manager *manager)
+    {
+        return zwlr_data_control_manager_v1_create_data_source(manager);
+    }
+    static void addSourceListener(Source *source, const SourceListener *listener, void *data)
+    {
+        zwlr_data_control_source_v1_add_listener(source, listener, data);
+    }
+    static void sourceOffer(Source *source, const char *mime)
+    {
+        zwlr_data_control_source_v1_offer(source, mime);
+    }
+    static void destroySource(Source *source) { zwlr_data_control_source_v1_destroy(source); }
+    static void setSelection(Device *device, Source *source)
+    {
+        zwlr_data_control_device_v1_set_selection(device, source);
+    }
+    static void addOfferListener(Offer *offer, const OfferListener *listener, void *data)
+    {
+        zwlr_data_control_offer_v1_add_listener(offer, listener, data);
+    }
+    static void offerReceive(Offer *offer, const char *mime, int32_t descriptor)
+    {
+        zwlr_data_control_offer_v1_receive(offer, mime, descriptor);
+    }
+    static void destroyOffer(Offer *offer) { zwlr_data_control_offer_v1_destroy(offer); }
+    static void destroyManager(Manager *manager) { zwlr_data_control_manager_v1_destroy(manager); }
+};
+
+struct Ext
+{
+    using Manager = ext_data_control_manager_v1;
+    using Device = ext_data_control_device_v1;
+    using Source = ext_data_control_source_v1;
+    using Offer = ext_data_control_offer_v1;
+    using DeviceListener = ext_data_control_device_v1_listener;
+    using OfferListener = ext_data_control_offer_v1_listener;
+    using SourceListener = ext_data_control_source_v1_listener;
+
+    static constexpr const char *managerName = "ext_data_control_manager_v1";
+
+    static Manager *bindManager(wl_registry *registry, uint32_t name, uint32_t version)
+    {
+        return static_cast<Manager *>(wl_registry_bind(registry, name,
+            &ext_data_control_manager_v1_interface, std::min(version, 1u)));
+    }
+    static Device *getDevice(Manager *manager, wl_seat *seat)
+    {
+        return ext_data_control_manager_v1_get_data_device(manager, seat);
+    }
+    static void addDeviceListener(Device *device, const DeviceListener *listener, void *data)
+    {
+        ext_data_control_device_v1_add_listener(device, listener, data);
+    }
+    static void destroyDevice(Device *device) { ext_data_control_device_v1_destroy(device); }
+    static Source *createSource(Manager *manager)
+    {
+        return ext_data_control_manager_v1_create_data_source(manager);
+    }
+    static void addSourceListener(Source *source, const SourceListener *listener, void *data)
+    {
+        ext_data_control_source_v1_add_listener(source, listener, data);
+    }
+    static void sourceOffer(Source *source, const char *mime)
+    {
+        ext_data_control_source_v1_offer(source, mime);
+    }
+    static void destroySource(Source *source) { ext_data_control_source_v1_destroy(source); }
+    static void setSelection(Device *device, Source *source)
+    {
+        ext_data_control_device_v1_set_selection(device, source);
+    }
+    static void addOfferListener(Offer *offer, const OfferListener *listener, void *data)
+    {
+        ext_data_control_offer_v1_add_listener(offer, listener, data);
+    }
+    static void offerReceive(Offer *offer, const char *mime, int32_t descriptor)
+    {
+        ext_data_control_offer_v1_receive(offer, mime, descriptor);
+    }
+    static void destroyOffer(Offer *offer) { ext_data_control_offer_v1_destroy(offer); }
+    static void destroyManager(Manager *manager) { ext_data_control_manager_v1_destroy(manager); }
+};
+
+}
+}
+
+class ClipboardController::BackendImplBase : public QObject
+{
+public:
+    explicit BackendImplBase(ClipboardController *controller) : owner(controller) {}
+    virtual bool start() = 0;
+    virtual void shutdown() = 0;
+    virtual bool publish(const Entry &entry) = 0;
+
+protected:
+    void reportReady(bool ready, const QString &status = {})
+    {
+        QMetaObject::invokeMethod(owner, [controller = owner, ready, status] {
+            controller->setBackendReady(ready, status);
+        }, Qt::QueuedConnection);
+    }
+
+    ClipboardController *owner = nullptr;
+};
+
+template <class P>
+struct ClipboardController::BackendImpl final : ClipboardController::BackendImplBase
 {
     struct Offer {
-        zwlr_data_control_offer_v1 *object = nullptr;
+        typename P::Offer *object = nullptr;
         QStringList mimeTypes;
     };
     struct Source {
-        Backend *backend = nullptr;
-        zwlr_data_control_source_v1 *object = nullptr;
+        BackendImpl *backend = nullptr;
+        typename P::Source *object = nullptr;
         QHash<QString, QByteArray> payloads;
     };
 
-    explicit Backend(ClipboardController *controller) : owner(controller) {}
-    ~Backend() { shutdown(); }
+    explicit BackendImpl(ClipboardController *controller) : BackendImplBase(controller) {}
+    ~BackendImpl() override { shutdown(); }
 
-    bool start()
+    bool start() override
     {
         display = wl_display_connect(nullptr);
         if (!display) return false;
         registry = wl_display_get_registry(display);
         wl_registry_add_listener(registry, &registryListener, this);
-        if (wl_display_roundtrip(display) < 0 || !manager || !seat) return false;
-        device = zwlr_data_control_manager_v1_get_data_device(manager, seat);
-        zwlr_data_control_device_v1_add_listener(device, &deviceListener, this);
+        if (wl_display_roundtrip(display) < 0 || !manager || !seat) {
+            
+            return false;
+        }
+        device = P::getDevice(manager, seat);
+        P::addDeviceListener(device, &deviceListener, this);
         baselinePending = true;
         if (wl_display_roundtrip(display) < 0) return false;
         baselinePending = false;
@@ -157,37 +302,37 @@ struct ClipboardController::Backend : QObject
         return true;
     }
 
-    void shutdown()
+    void shutdown() override
     {
         cancelRead();
         displayNotifier.reset();
         for (auto &source : sources) {
-            if (source->object) zwlr_data_control_source_v1_destroy(source->object);
+            if (source->object) P::destroySource(source->object);
             source->object = nullptr;
         }
         sources.clear();
         for (auto &[object, offer] : offers) {
-            if (object) zwlr_data_control_offer_v1_destroy(object);
+            if (object) P::destroyOffer(object);
             offer->object = nullptr;
         }
         offers.clear();
         selection = nullptr;
-        if (device) zwlr_data_control_device_v1_destroy(device);
+        if (device) P::destroyDevice(device);
         if (seat) wl_seat_destroy(seat);
-        if (manager) zwlr_data_control_manager_v1_destroy(manager);
+        if (manager) P::destroyManager(manager);
         if (registry) wl_registry_destroy(registry);
         if (display) wl_display_disconnect(display);
         device = nullptr; seat = nullptr; manager = nullptr; registry = nullptr; display = nullptr;
         connected = false;
     }
 
-    bool publish(const Entry &entry)
+    bool publish(const Entry &entry) override
     {
         if (!connected || !manager || !device) return false;
         auto source = std::make_unique<Source>();
         source->backend = this;
-        source->object = zwlr_data_control_manager_v1_create_data_source(manager);
-        zwlr_data_control_source_v1_add_listener(source->object, &sourceListener, source.get());
+        source->object = P::createSource(manager);
+        P::addSourceListener(source->object, &sourceListener, source.get());
         if (entry.kind == QStringLiteral("text") || entry.kind == QStringLiteral("url")) {
             for (const auto &mime : {QStringLiteral("text/plain;charset=utf-8"), QStringLiteral("text/plain"),
                                      QStringLiteral("UTF8_STRING"), QStringLiteral("STRING"), QStringLiteral("TEXT")})
@@ -196,11 +341,11 @@ struct ClipboardController::Backend : QObject
             source->payloads.insert(entry.mime, entry.payload);
         }
         for (auto it = source->payloads.cbegin(); it != source->payloads.cend(); ++it)
-            zwlr_data_control_source_v1_offer(source->object, it.key().toUtf8().constData());
+            P::sourceOffer(source->object, it.key().toUtf8().constData());
         Source *raw = source.get();
         sources.push_back(std::move(source));
         ignoreNextSelection = true;
-        zwlr_data_control_device_v1_set_selection(device, raw->object);
+        P::setSelection(device, raw->object);
         const bool success = wl_display_flush(display) >= 0 || errno == EAGAIN;
         if (!success) ignoreNextSelection = false;
         return success;
@@ -265,7 +410,7 @@ struct ClipboardController::Backend : QObject
         readMime = mime;
         readData.clear();
         readLimit = mime.startsWith(QStringLiteral("image/")) ? maximumImageBytes : maximumTextBytes;
-        zwlr_data_control_offer_v1_receive(offer->object, mime.toUtf8().constData(), descriptors[1]);
+        P::offerReceive(offer->object, mime.toUtf8().constData(), descriptors[1]);
         ::close(descriptors[1]);
         wl_display_flush(display);
         readNotifier = std::make_unique<QSocketNotifier>(readDescriptor, QSocketNotifier::Read, this);
@@ -310,12 +455,12 @@ struct ClipboardController::Backend : QObject
         readLimit = 0;
     }
 
-    void removeOffer(zwlr_data_control_offer_v1 *object)
+    void removeOffer(typename P::Offer *object)
     {
         if (!object) return;
         const auto found = offers.find(object);
         if (found == offers.end()) return;
-        zwlr_data_control_offer_v1_destroy(object);
+        P::destroyOffer(object);
         offers.erase(found);
     }
 
@@ -324,45 +469,37 @@ struct ClipboardController::Backend : QObject
         const auto found = std::find_if(sources.begin(), sources.end(),
             [source](const auto &candidate) { return candidate.get() == source; });
         if (found == sources.end()) return;
-        if ((*found)->object) zwlr_data_control_source_v1_destroy((*found)->object);
+        if ((*found)->object) P::destroySource((*found)->object);
         (*found)->object = nullptr;
         sources.erase(found);
-    }
-
-    void reportReady(bool ready, const QString &status = {})
-    {
-        QMetaObject::invokeMethod(owner, [controller = owner, ready, status] {
-            controller->setBackendReady(ready, status);
-        }, Qt::QueuedConnection);
     }
 
     static void registryGlobal(void *data, wl_registry *registryObject, uint32_t name,
                                const char *interface, uint32_t version)
     {
-        auto *self = static_cast<Backend *>(data);
-        if (!self->manager && std::strcmp(interface, zwlr_data_control_manager_v1_interface.name) == 0)
-            self->manager = static_cast<zwlr_data_control_manager_v1 *>(wl_registry_bind(
-                registryObject, name, &zwlr_data_control_manager_v1_interface, std::min(version, 2u)));
+        auto *self = static_cast<BackendImpl *>(data);
+        if (!self->manager && std::strcmp(interface, P::managerName) == 0)
+            self->manager = P::bindManager(registryObject, name, version);
         else if (!self->seat && std::strcmp(interface, wl_seat_interface.name) == 0)
             self->seat = static_cast<wl_seat *>(wl_registry_bind(
                 registryObject, name, &wl_seat_interface, std::min(version, 7u)));
     }
     static void registryRemoved(void *, wl_registry *, uint32_t) {}
-    static void offered(void *data, zwlr_data_control_offer_v1 *, const char *mime)
+    static void offered(void *data, typename P::Offer *, const char *mime)
     {
         static_cast<Offer *>(data)->mimeTypes.append(QString::fromUtf8(mime));
     }
-    static void dataOffer(void *data, zwlr_data_control_device_v1 *, zwlr_data_control_offer_v1 *object)
+    static void dataOffer(void *data, typename P::Device *, typename P::Offer *object)
     {
-        auto *self = static_cast<Backend *>(data);
+        auto *self = static_cast<BackendImpl *>(data);
         auto offer = std::make_unique<Offer>();
         offer->object = object;
-        zwlr_data_control_offer_v1_add_listener(object, &offerListener, offer.get());
+        P::addOfferListener(object, &offerListener, offer.get());
         self->offers.emplace(object, std::move(offer));
     }
-    static void selected(void *data, zwlr_data_control_device_v1 *, zwlr_data_control_offer_v1 *object)
+    static void selected(void *data, typename P::Device *, typename P::Offer *object)
     {
-        auto *self = static_cast<Backend *>(data);
+        auto *self = static_cast<BackendImpl *>(data);
         if (self->selection && self->selection != object) self->removeOffer(self->selection);
         self->selection = object;
         if (!object) { self->cancelRead(); return; }
@@ -371,38 +508,37 @@ struct ClipboardController::Backend : QObject
         const auto found = self->offers.find(object);
         if (found != self->offers.end()) self->beginRead(found->second.get());
     }
-    static void finished(void *data, zwlr_data_control_device_v1 *)
+    static void finished(void *data, typename P::Device *)
     {
-        auto *self = static_cast<Backend *>(data);
+        auto *self = static_cast<BackendImpl *>(data);
         self->connected = false;
         self->reportReady(false, QCoreApplication::translate("HyprEndfield", "系统剪贴板监视已终止"));
     }
-    static void primarySelected(void *data, zwlr_data_control_device_v1 *, zwlr_data_control_offer_v1 *object)
+    static void primarySelected(void *data, typename P::Device *, typename P::Offer *object)
     {
-        static_cast<Backend *>(data)->removeOffer(object);
+        static_cast<BackendImpl *>(data)->removeOffer(object);
     }
-    static void sourceSend(void *data, zwlr_data_control_source_v1 *, const char *mime, int32_t descriptor)
+    static void sourceSend(void *data, typename P::Source *, const char *mime, int32_t descriptor)
     {
         auto *source = static_cast<Source *>(data);
         const QByteArray bytes = source->payloads.value(QString::fromUtf8(mime));
         std::thread(writeAllAndClose, descriptor, bytes).detach();
     }
-    static void sourceCancelled(void *data, zwlr_data_control_source_v1 *)
+    static void sourceCancelled(void *data, typename P::Source *)
     {
         auto *source = static_cast<Source *>(data);
         source->backend->removeSource(source);
     }
 
-    ClipboardController *owner = nullptr;
     wl_display *display = nullptr;
     wl_registry *registry = nullptr;
     wl_seat *seat = nullptr;
-    zwlr_data_control_manager_v1 *manager = nullptr;
-    zwlr_data_control_device_v1 *device = nullptr;
+    typename P::Manager *manager = nullptr;
+    typename P::Device *device = nullptr;
     std::unique_ptr<QSocketNotifier> displayNotifier;
-    std::unordered_map<zwlr_data_control_offer_v1 *, std::unique_ptr<Offer>> offers;
+    std::unordered_map<typename P::Offer *, std::unique_ptr<Offer>> offers;
     std::vector<std::unique_ptr<Source>> sources;
-    zwlr_data_control_offer_v1 *selection = nullptr;
+    typename P::Offer *selection = nullptr;
     bool connected = false;
     bool baselinePending = false;
     bool ignoreNextSelection = false;
@@ -413,11 +549,52 @@ struct ClipboardController::Backend : QObject
     std::unique_ptr<QSocketNotifier> readNotifier;
 
     inline static const wl_registry_listener registryListener{registryGlobal, registryRemoved};
-    inline static const zwlr_data_control_offer_v1_listener offerListener{offered};
-    inline static const zwlr_data_control_device_v1_listener deviceListener{
+    inline static const typename P::OfferListener offerListener{offered};
+    inline static const typename P::DeviceListener deviceListener{
         dataOffer, selected, finished, primarySelected};
-    inline static const zwlr_data_control_source_v1_listener sourceListener{sourceSend, sourceCancelled};
+    inline static const typename P::SourceListener sourceListener{sourceSend, sourceCancelled};
 };
+
+struct ClipboardController::Backend final : QObject
+{
+    explicit Backend(ClipboardController *controller) : owner(controller) {}
+    ~Backend() { shutdown(); }
+
+    bool start()
+    {
+        // wlroots 系（Hyprland/niri）走 wlr-data-control；KWin 只提供 ext-data-control。
+        
+        auto wlr = std::make_unique<BackendImpl<clipboard_dc::Wlr>>(owner);
+        if (wlr->start()) { impl = std::move(wlr); return true; }
+        wlr->shutdown();
+        
+        auto ext = std::make_unique<BackendImpl<clipboard_dc::Ext>>(owner);
+        if (ext->start()) { impl = std::move(ext); return true; }
+        ext->shutdown();
+        return false;
+    }
+
+    void shutdown()
+    {
+        if (!impl) return;
+        impl->shutdown();
+        impl.reset();
+    }
+
+    bool publish(const Entry &entry) { return impl && impl->publish(entry); }
+
+    void reportReady(bool ready, const QString &status = {})
+    {
+        QMetaObject::invokeMethod(owner, [controller = owner, ready, status] {
+            controller->setBackendReady(ready, status);
+        }, Qt::QueuedConnection);
+    }
+
+private:
+    ClipboardController *owner = nullptr;
+    std::unique_ptr<BackendImplBase> impl;
+};
+
 
 ClipboardController::ClipboardController(QObject *parent, bool automatic, int capacity)
     : QObject(parent), m_capacity(std::max(1, capacity)), m_status(QCoreApplication::translate("HyprEndfield", "正在连接系统剪贴板"))
@@ -518,7 +695,7 @@ bool ClipboardController::capture(const QString &mime, const QByteArray &data, b
         entry.meta = entry.kind == QStringLiteral("url") ? QUrl(text.trimmed()).host()
             : QCoreApplication::translate("HyprEndfield", "%1 字符").arg(text.size());
     }
-    const QByteArray digestInput = entry.kind.toUtf8() + '\0' + entry.payload;
+        const QByteArray digestInput = entry.kind.toUtf8() + '\0' + entry.payload;
     entry.id = QString::fromLatin1(QCryptographicHash::hash(digestInput, QCryptographicHash::Sha256).toHex());
     const auto existing = std::find_if(m_entries.begin(), m_entries.end(),
         [&entry](const Entry &candidate) { return candidate.id == entry.id; });

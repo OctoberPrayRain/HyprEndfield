@@ -40,6 +40,8 @@ signals:
 private:
     struct Entry;
     struct Backend;
+    struct BackendImplBase;
+    template <class P> struct BackendImpl;
 
     bool capture(const QString &mime, const QByteArray &data, bool sensitive);
     void setBackendReady(bool ready, const QString &status = {});
