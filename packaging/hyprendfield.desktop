@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Endfield HUD
+Name[zh_CN]=终末地 HUD
+GenericName=Desktop HUD
+GenericName[zh_CN]=桌面 HUD
+Comment=EndfieldHUD 的 Linux 移植（HyprEndfield）
+Comment[zh_CN]=终末地风格的桌面 HUD：便笺、文件架、终端、日历、系统监视
+Exec=/usr/bin/HyprEndfield --toggle
+Icon=preferences-desktop
+Terminal=false
+Categories=Utility;
+StartupNotify=false
