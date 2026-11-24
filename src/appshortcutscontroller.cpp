@@ -1,4 +1,7 @@
 #include "appshortcutscontroller.hpp"
+#include <utility>
+
+#include <QBuffer>
 #include <QClipboard>
 #include <QDateTime>
 #include <QDir>
@@ -6,6 +9,10 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
+#include <KService>
+#include <KServiceGroup>
+#include <KSycoca>
+#include <KSycocaEntry>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -13,6 +20,8 @@
 #include <QPainter>
 #include <QProcess>
 #include <QSaveFile>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTextBoundaryFinder>
@@ -30,6 +39,26 @@ QJsonArray presetData() {
     static const auto data = [] { QFile file(":/assets/app-shortcut/artwork.json"); if (!file.open(QIODevice::ReadOnly)) return QJsonArray(); return QJsonDocument::fromJson(file.readAll()).object()["presets"].toArray(); }();
     return data;
 }
+QString iconData(const QString &name, int size = 64, const QColor &tint = {})
+{
+    if (name.isEmpty()) return {};
+    QImage image = QIcon::fromTheme(name).pixmap(size, size).toImage();
+    if (image.isNull()) return {};
+    // 类别卡片统一深色单色化，避免浅色主题图标在浅色卡片上看不清。
+    if (tint.isValid()) {
+        image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QPainter painter(&image);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        painter.fillRect(image.rect(), tint);
+        painter.end();
+    }
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(bytes.toBase64());
+}
+
 QColor averageColor(QImage image) {
     if (image.isNull()) return QColor("#2A2A2A");
     image = image.scaled(8, 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32_Premultiplied);
@@ -44,7 +73,18 @@ QColor averageColor(QImage image) {
 }
 AppShortcutsController::AppShortcutsController(QObject *parent, QString directory, TestLauncher launcher)
     : QObject(parent), m_directory(directory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/AppShortcuts" : directory),
-      m_path(m_directory + "/shortcuts.json"), m_testLauncher(std::move(launcher)) { load(); refresh(); }
+      m_path(m_directory + "/shortcuts.json"), m_testLauncher(std::move(launcher))
+{
+    load();
+    refresh();
+    // 桥接 KDE 菜单：装/卸应用或改菜单后 KSycoca 会重建，界面自动同步。
+    if (auto *sycoca = KSycoca::self())
+        connect(sycoca, &KSycoca::databaseChanged, this, [this] {
+            m_catalogReady = false;
+            ++m_catalogRevision;
+            emit changed();
+        });
+}
 QString AppShortcutsController::normalizeName(const QString &value) {
     const auto text = value.trimmed();
     for (const auto c : text) if (c.category() == QChar::Other_Control) return {};
@@ -61,6 +101,7 @@ std::optional<AppShortcutsController::App> AppShortcutsController::inspect(const
     App app;
     app.name = QString::fromUtf8(g_app_info_get_display_name(G_APP_INFO(desktop)));
     app.executable = QString::fromUtf8(g_app_info_get_executable(G_APP_INFO(desktop)));
+
     char *type = g_desktop_app_info_get_string(desktop, "Type");
     const bool valid = type && QByteArray(type) == "Application" && !g_desktop_app_info_get_boolean(desktop, "Hidden") && !app.name.isEmpty() && !app.executable.isEmpty();
     g_free(type);
@@ -122,10 +163,181 @@ QVariantList AppShortcutsController::presets() const {
     return result;
 }
 void AppShortcutsController::refresh() {
+    m_catalogReady = false;
     m_apps.clear();
     for (const auto &entry : m_entries) if (const auto app = inspect(entry.path); app && app->executable == entry.executable) m_apps.insert(entry.id, *app);
     emit changed();
 }
+
+QHash<QString, int> AppShortcutsController::favoriteOrder() const
+{
+    // 桥接 Kickoff 的“常用应用程序”标签：plasma 收藏列表存在 ResourceLink 里。
+    QHash<QString, int> order;
+    const QString path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/kactivitymanagerd/resources/database");
+    if (!QFile::exists(path)) return order;
+    const QString connection = QStringLiteral("hyprendfield-favorites");
+    {
+        auto database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        database.setDatabaseName(path);
+        database.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        if (database.open()) {
+            QSqlQuery query(database);
+            if (query.exec(QStringLiteral(
+                    "SELECT targettedResource FROM ResourceLink "
+                    "WHERE usedActivity=':global' AND initiatingAgent='org.kde.plasma.favorites.applications' "
+                    "ORDER BY rowid"))) {
+                int position = 0;
+                while (query.next()) {
+                    const QString uri = query.value(0).toString();
+                    if (!uri.startsWith(QStringLiteral("applications:"))) continue;
+                    const QString id = uri.section(QLatin1Char(':'), 1);
+                    if (!id.isEmpty() && !order.contains(id)) order.insert(id, position++);
+                }
+            }
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connection);
+    return order;
+}
+
+void AppShortcutsController::updateFavorites()
+{
+    if (!m_catalogReady) return;
+    const auto order = favoriteOrder();
+    auto apps = m_catalog.value(QStringLiteral("apps")).toList();
+    bool changed = false;
+    for (auto &value : apps) {
+        auto row = value.toMap();
+        const int favorite = order.value(row.value(QStringLiteral("storageId")).toString(), -1);
+        if (row.value(QStringLiteral("favorite")).toInt() != favorite) {
+            row[QStringLiteral("favorite")] = favorite;
+            value = row;
+            changed = true;
+        }
+    }
+    if (changed) m_catalog[QStringLiteral("apps")] = apps;
+}
+
+QVariantMap AppShortcutsController::applicationCatalog()
+{
+    if (m_catalogReady) {
+        updateFavorites();
+        return m_catalog;
+    }
+    if (auto *sycoca = KSycoca::self()) sycoca->ensureCacheValid();
+
+    // 桥接 KDE 自己的菜单模型（KServiceGroup），类别、名称与归组和 Kickoff 一致。
+    QVariantList apps;
+    QVariantList categories;
+    QHash<QString, int> index;      // storageId -> apps 下标
+    QHash<QString, int> groupSeen;  // relPath -> categories 下标
+
+    const auto favorites = favoriteOrder();
+    const auto appendService = [&](const KSycocaEntry::Ptr &entry, const QString &groupKey) {
+        const auto *service = static_cast<const KService *>(entry.data());
+        if (!service || service->noDisplay() || service->entryPath().isEmpty()) return;
+        const QString id = service->storageId();
+        if (id.isEmpty()) return;
+        if (!index.contains(id)) {
+            index.insert(id, apps.size());
+            apps.append(QVariantMap{{"path", service->entryPath()}, {"name", service->name()},
+                {"executable", service->exec()}, {"icon", iconData(service->icon())},
+                {"categories", QVariantList{groupKey}}, {"storageId", id},
+                {"favorite", favorites.value(id, -1)}});
+        } else {
+            auto row = apps.at(index.value(id)).toMap();
+            auto keys = row.value(QStringLiteral("categories")).toStringList();
+            if (!keys.contains(groupKey)) keys.append(groupKey);
+            row[QStringLiteral("categories")] = keys;
+            apps[index.value(id)] = row;
+        }
+    };
+
+    const auto gather = [](KServiceGroup *node, KSycocaEntry::List &out, auto &&self) -> void {
+        for (const auto &entry : node->entries(true, true)) {
+            if (entry->isType(KST_KServiceGroup)) self(static_cast<KServiceGroup *>(entry.data()), out, self);
+            else if (entry->isType(KST_KService)) out.append(entry);
+        }
+    };
+
+    if (const auto root = KServiceGroup::root()) {
+        for (const auto &entry : root->entries(true, true)) {
+            if (!entry->isType(KST_KServiceGroup)) continue;
+            auto *group = static_cast<KServiceGroup *>(entry.data());
+            if (!group || group->noDisplay()) continue;
+            const QString key = group->relPath();
+            if (key.isEmpty() || groupSeen.contains(key)) continue;
+            KSycocaEntry::List services;
+            gather(group, services, gather);
+            services.removeIf([](const KSycocaEntry::Ptr &entry) {
+                const auto *service = static_cast<const KService *>(entry.data());
+                return !service || service->noDisplay() || service->entryPath().isEmpty();
+            });
+            if (services.isEmpty()) continue;
+            groupSeen.insert(key, categories.size());
+            categories.append(QVariantMap{{"key", key}, {"title", group->caption()}, {"icon", iconData(group->icon().isEmpty() ? QStringLiteral("folder") : group->icon(), 64, QColor(QStringLiteral("#2E2E2E")))}});
+            for (const auto &service : services) appendService(service, key);
+        }
+    }
+
+    m_catalog = QVariantMap{{"categories", categories}, {"apps", apps}};
+    m_catalogReady = true;
+    return m_catalog;
+}
+QVariantList AppShortcutsController::launchCategories()
+{
+    const auto catalog = applicationCatalog();
+    QVariantList result{
+        QVariantMap{{"key", QStringLiteral("frequent")}, {"title", tr("常用应用程序")}, {"icon", iconData(QStringLiteral("view-history"), 64, QColor(QStringLiteral("#2E2E2E")))}},
+        QVariantMap{{"key", QStringLiteral("all")}, {"title", tr("全部应用程序")}, {"icon", iconData(QStringLiteral("applications-all"), 64, QColor(QStringLiteral("#2E2E2E")))}}
+    };
+    for (const auto &value : catalog.value(QStringLiteral("categories")).toList()) result.append(value);
+    return result;
+}
+
+void AppShortcutsController::setLaunchCategory(const QString &key)
+{
+    if (key.isEmpty() || key == m_launchCategory) return;
+    bool valid = key == QStringLiteral("all") || key == QStringLiteral("frequent");
+    if (!valid) {
+        for (const auto &value : launchCategories())
+            if (value.toMap().value(QStringLiteral("key")).toString() == key) { valid = true; break; }
+    }
+    if (!valid) return;
+    m_launchCategory = key;
+    emit launchCategoryChanged();
+}
+
+bool AppShortcutsController::requestOpenPath(const QString &path)
+{
+    if (m_launching || path.isEmpty()) return false;
+    m_pending.clear();
+    m_pendingPath = path;
+    emit launchRequested();
+    return true;
+}
+
+void AppShortcutsController::launchFile(const QString &path, const QString &name)
+{
+    const auto done = [this, path, name](bool success, const QString &error) {
+        m_launching = false;
+        if (success) { m_error.clear(); emit changed(); emit opened(name); }
+        else { fail(tr("无法打开应用：") + error.left(500)); emit launchFailed(); }
+    };
+    if (m_testLauncher) { const auto error = m_testLauncher(path); done(error.isEmpty(), error); return; }
+    auto *process = new QProcess(this); auto *timeout = new QTimer(process); timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, process, &QProcess::kill);
+    connect(process, &QProcess::errorOccurred, this, [process, done](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) { done(false, process->errorString()); process->deleteLater(); }
+    });
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [process, timeout, done](int code, QProcess::ExitStatus status) {
+        timeout->stop(); done(code == 0 && status == QProcess::NormalExit, QString::fromUtf8(process->readAllStandardError()).trimmed()); process->deleteLater();
+    });
+    m_launching = true; emit changed(); process->start("gio", {"launch", path}); timeout->start(15000);
+}
+
 bool AppShortcutsController::add(const QUrl &url) {
     if (!url.isLocalFile()) return fail(tr("请选择可用的 Linux 应用快捷方式（.desktop）。"));
     const auto path = QFileInfo(url.toLocalFile()).canonicalFilePath(); const auto app = inspect(path);
@@ -174,29 +386,31 @@ bool AppShortcutsController::requestOpen(const QString &id) {
     for (const auto &entry : m_entries) if (entry.id == id) { m_pending = id; emit launchRequested(); return true; }
     return false;
 }
-void AppShortcutsController::launchPending() {
-    if (m_pending.isEmpty() || m_launching) return;
+void AppShortcutsController::launchPending()
+{
+    if (m_launching) return;
+    if (!m_pendingPath.isEmpty()) {
+        const auto path = std::exchange(m_pendingPath, {});
+        const QFileInfo info(path);
+        if (!info.isFile()) { fail(tr("应用已移除，请刷新列表。")); emit launchFailed(); return; }
+        QString name = info.completeBaseName();
+        for (const auto &value : m_catalog) {
+            const auto row = value.toMap();
+            if (row.value(QStringLiteral("path")).toString() == path) { name = row.value(QStringLiteral("name")).toString(); break; }
+        }
+        launchFile(path, name);
+        return;
+    }
+    if (m_pending.isEmpty()) return;
     const auto id = std::exchange(m_pending, {});
     for (const auto &entry : m_entries) if (entry.id == id) {
         const auto app = inspect(entry.path);
         if (!app || app->executable != entry.executable) { fail(tr("应用已移动、移除或更改，请重新选择应用。")); emit launchFailed(); return; }
-        const auto done = [this, name = entry.name](bool success, const QString &error) {
-            m_launching = false;
-            if (success) { m_error.clear(); emit changed(); emit opened(name); }
-            else { fail(tr("无法打开应用：") + error.left(500)); emit launchFailed(); }
-        };
-        if (m_testLauncher) { const auto error = m_testLauncher(entry.path); done(error.isEmpty(), error); return; }
-        auto *process = new QProcess(this); auto *timeout = new QTimer(process); timeout->setSingleShot(true);
-        connect(timeout, &QTimer::timeout, process, &QProcess::kill);
-        connect(process, &QProcess::errorOccurred, this, [process, done](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) { done(false, process->errorString()); process->deleteLater(); }
-        });
-        connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [process, timeout, done](int code, QProcess::ExitStatus status) {
-            timeout->stop(); done(code == 0 && status == QProcess::NormalExit, QString::fromUtf8(process->readAllStandardError()).trimmed()); process->deleteLater();
-        });
-        m_launching = true; emit changed(); process->start("gio", {"launch", entry.path}); timeout->start(15000); return;
+        launchFile(entry.path, entry.name);
+        return;
     }
 }
+
 QImage AppShortcutsController::artwork(const QString &id, const QString &preset, QColor accent, QSize size) const {
     if (size.isEmpty()) size = {80, 80}; size = size.boundedTo({512, 512});
     QImage result(size, QImage::Format_ARGB32_Premultiplied); result.fill(Qt::transparent);

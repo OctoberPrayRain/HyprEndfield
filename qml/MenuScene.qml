@@ -289,7 +289,7 @@ Item {
                             readonly property int slot: row.index * 2 + index
                             x: index * 128
                             entry: menu.shell.rightButtons[slot]
-                            selected: menu.shell.selectedModule === entry.key
+                            selected: entry.launchCategory ? appShortcutsController.launchCategory === entry.launchCategory : menu.shell.selectedModule === entry.key
                             secondColumn: index === 1
                             rowX: row.x
                             rowY: row.y
@@ -297,7 +297,17 @@ Item {
                             leanY: menu.leanY
                             opacity: menu.shell.navigationListValue("rightAlpha", slot, 1)
                             onHoverEntered: menu.shell.soundEffects.playHover()
-                            onTriggered: { menu.shell.soundEffects.playClick(); if (entry.shortcutId) appShortcutsController.requestOpen(entry.shortcutId); else menu.shell.selectedModule = entry.key }
+                            onTriggered: {
+                            menu.shell.soundEffects.playClick()
+                            if (entry.shortcutId) appShortcutsController.requestOpen(entry.shortcutId)
+                            else if (entry.launchCategory) appShortcutsController.setLaunchCategory(entry.launchCategory)
+                            else if (entry.backToMenu) menu.shell.selectedModule = menu.shell.previousModule
+                            else {
+                                if (entry.key === "addApp" && menu.shell.selectedModule !== "addApp")
+                                    menu.shell.previousModule = menu.shell.selectedModule
+                                menu.shell.selectedModule = entry.key
+                            }
+                        }
                             DropArea {
                                 anchors.fill: parent
                                 enabled: parent.entry.key === "fileShelf"
