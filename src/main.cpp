@@ -287,7 +287,28 @@ int main(int argc, char *argv[])
     QObject::connect(&account, &AccountController::eventOccurred, &eventLog, [&](const QString &action) { eventLog.recordAction("accountAction", action); });
     QObject::connect(&gameProfile, &ProfileController::cropChanged, &eventLog, [&](const QString &target) { eventLog.record("profileCropChanged", {{"target", target}}); });
     AppShortcutsController appShortcuts;
-    QObject::connect(&settings, &SettingsController::languageChanged, &appShortcuts, &AppShortcutsController::changed);
+    QObject::connect(&settings, &SettingsController::languageChanged, &appShortcuts, &AppShortcutsController::invalidateCatalog);
+    QObject::connect(&settings, &SettingsController::preferenceChanged, &appShortcuts, [&](const QString &key, const QVariant &value) {
+        if (key == QStringLiteral("appCatalogSource")) {
+            appShortcuts.setCatalogSource(value.toString());
+            appShortcuts.applyHomeCategory();
+        } else if (key == QStringLiteral("appHomeCategory")) {
+            appShortcuts.setHomeCategory(value.toString());
+            appShortcuts.applyHomeCategory();
+        }
+    });
+    QObject::connect(&appShortcuts, &AppShortcutsController::catalogSourceChanged, &settings, [&] {
+        const auto source = appShortcuts.catalogSource();
+        if (settings.value(QStringLiteral("appCatalogSource")) != source)
+            settings.set(QStringLiteral("appCatalogSource"), source);
+    });
+    QObject::connect(&appShortcuts, &AppShortcutsController::homeCategoryChanged, &settings, [&] {
+        const auto home = appShortcuts.homeCategory();
+        if (settings.value(QStringLiteral("appHomeCategory")) != home)
+            settings.set(QStringLiteral("appHomeCategory"), home);
+    });
+    appShortcuts.setCatalogSource(settings.value(QStringLiteral("appCatalogSource")).toString());
+    appShortcuts.setHomeCategory(settings.value(QStringLiteral("appHomeCategory")).toString());
     QObject::connect(&appShortcuts, &AppShortcutsController::launchRequested, &controller, [&] {
         if (controller.hudVisible()) controller.hideHud();
         else appShortcuts.launchPending();

@@ -88,6 +88,7 @@ SettingsController::SettingsController(QObject *parent, QString preferences, QSt
         {"ambientAnimation", true}, {"reduceMotion", false}, {"lowPowerVisualMode", false},
         {"recordingMode", false}, {"dailyBootLog", true}, {"facilityAlerts", true},
         {"languageIndex", 0}, {"launchAtLogin", false}, {"closeOnFocusLost", false}, {"displayChoice", "pointer"}, {"soundVolume", 50},
+        {"appCatalogSource", "desktop"}, {"appHomeCategory", "all"},
         {"moduleOrder", defaultModules()}, {"hiddenModules", QStringList{}},
         {"batteryMethod", 0}, {"batteryDuration", 10.0}, {"batteryPlacement", 0}, {"batteryScale", 1.0},
         {"batteryX", .5}, {"batteryY", .12}, {"batteryMetric", 0}};
@@ -122,7 +123,7 @@ SettingsController::SettingsController(QObject *parent, QString preferences, QSt
 }
 
 QString SettingsController::storageKey(const QString &key) const {
-    static const QStringList system{"languageIndex", "launchAtLogin", "closeOnFocusLost", "displayChoice", "moduleOrder", "hiddenModules", "soundVolume"};
+    static const QStringList system{"languageIndex", "launchAtLogin", "closeOnFocusLost", "displayChoice", "moduleOrder", "hiddenModules", "soundVolume", "appCatalogSource", "appHomeCategory"};
     return (system.contains(key) ? "system/" : "display/") + key;
 }
 QVariant SettingsController::normalized(const QString &key, const QVariant &input) const {
@@ -153,6 +154,16 @@ QVariant SettingsController::normalized(const QString &key, const QVariant &inpu
     if (key == "applicationIcon" && !m_icons.isEmpty()) {
         for (const auto &i : m_icons) if (i.toMap().value("id") == input) return input.toString();
         return "endfield";
+    }
+    if (key == "appCatalogSource") {
+        const auto source = input.toString();
+        return source == "kde" || source == "desktop" ? source : QString("desktop");
+    }
+    if (key == "appHomeCategory") {
+        const auto home = input.toString().trimmed();
+        if (home.isEmpty() || home.size() > 240) return QString("all");
+        for (const auto c : home) if (c.category() == QChar::Other_Control) return QString("all");
+        return home;
     }
     return input.toString();
 }

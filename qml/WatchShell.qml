@@ -151,7 +151,7 @@ Item {
     readonly property bool appLauncherActive: selectedModule === "addApp"
     readonly property var launcherButtons: {
         if (typeof appShortcutsController === "undefined") return []
-        // 依赖菜单数据库版本，装/卸应用后右侧类别自动同步。
+        // 依赖分类目录版本，装/卸应用后右侧类别自动同步。
         const revision = appShortcutsController.catalogRevision
         return [{ key: "category:back", backToMenu: true, label: qsTr("返回上级"), glyph: "back" }]
             .concat(appShortcutsController.launchCategories().map(category => ({
@@ -172,7 +172,11 @@ Item {
         target: typeof appShortcutsController === "undefined" ? null : appShortcutsController
         function onLaunchFailed() { shell.selectedModule = "addApp" }
     }
-    onAppLauncherActiveChanged: rightScrollOffset = 0
+    onAppLauncherActiveChanged: {
+        rightScrollOffset = 0
+        if (appLauncherActive && typeof appShortcutsController !== "undefined")
+            appShortcutsController.applyHomeCategory()
+    }
     onRightButtonsChanged: {
         rightScrollOffset = Math.min(maximumRightScrollOffset, rightScrollOffset);
         if (!appLauncherActive && availableRightButtons.some(entry => entry.key === selectedModule)

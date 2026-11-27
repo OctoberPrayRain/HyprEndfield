@@ -7,12 +7,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QGuiApplication>
 #include <QIcon>
+#ifdef HAVE_KSERVICE
 #include <KService>
 #include <KServiceGroup>
 #include <KSycoca>
 #include <KSycocaEntry>
+#endif
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -27,6 +30,7 @@
 #include <QTextBoundaryFinder>
 #include <QTimer>
 #include <QUuid>
+#include <algorithm>
 #pragma push_macro("signals")
 #undef signals
 #include <gio/gdesktopappinfo.h>
@@ -39,10 +43,10 @@ QJsonArray presetData() {
     static const auto data = [] { QFile file(":/assets/app-shortcut/artwork.json"); if (!file.open(QIODevice::ReadOnly)) return QJsonArray(); return QJsonDocument::fromJson(file.readAll()).object()["presets"].toArray(); }();
     return data;
 }
-QString iconData(const QString &name, int size = 64, const QColor &tint = {})
+QString encodedIcon(const QIcon &icon, int size = 64, const QColor &tint = {})
 {
-    if (name.isEmpty()) return {};
-    QImage image = QIcon::fromTheme(name).pixmap(size, size).toImage();
+    if (icon.isNull()) return {};
+    QImage image = icon.pixmap(size, size).toImage();
     if (image.isNull()) return {};
     // 类别卡片统一深色单色化，避免浅色主题图标在浅色卡片上看不清。
     if (tint.isValid()) {
@@ -58,6 +62,11 @@ QString iconData(const QString &name, int size = 64, const QColor &tint = {})
     image.save(&buffer, "PNG");
     return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(bytes.toBase64());
 }
+QString iconData(const QString &name, int size = 64, const QColor &tint = {})
+{
+    if (name.isEmpty()) return {};
+    return encodedIcon(QIcon::fromTheme(name), size, tint);
+}
 
 QColor averageColor(QImage image) {
     if (image.isNull()) return QColor("#2A2A2A");
@@ -70,6 +79,170 @@ QColor averageColor(QImage image) {
     if (luminance > .55) { r *= .55 / luminance; g *= .55 / luminance; b *= .55 / luminance; }
     return QColor::fromRgbF(r, g, b);
 }
+QString mainCategoryKey(const QString &token)
+{
+    static const QHash<QString, QString> alias{
+        {QStringLiteral("AudioVideo"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Audio"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Video"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Mixer"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Sequencer"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Tuner"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("TV"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("AudioVideoEditing"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("DiscBurning"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Player"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Recorder"), QStringLiteral("AudioVideo")},
+        {QStringLiteral("Development"), QStringLiteral("Development")},
+        {QStringLiteral("Building"), QStringLiteral("Development")},
+        {QStringLiteral("Debugger"), QStringLiteral("Development")},
+        {QStringLiteral("IDE"), QStringLiteral("Development")},
+        {QStringLiteral("GUIDesigner"), QStringLiteral("Development")},
+        {QStringLiteral("Profiling"), QStringLiteral("Development")},
+        {QStringLiteral("RevisionControl"), QStringLiteral("Development")},
+        {QStringLiteral("Translation"), QStringLiteral("Development")},
+        {QStringLiteral("WebDevelopment"), QStringLiteral("Development")},
+        {QStringLiteral("Education"), QStringLiteral("Education")},
+        {QStringLiteral("Art"), QStringLiteral("Education")},
+        {QStringLiteral("Construction"), QStringLiteral("Education")},
+        {QStringLiteral("Music"), QStringLiteral("Education")},
+        {QStringLiteral("Game"), QStringLiteral("Game")},
+        {QStringLiteral("ActionGame"), QStringLiteral("Game")},
+        {QStringLiteral("AdventureGame"), QStringLiteral("Game")},
+        {QStringLiteral("ArcadeGame"), QStringLiteral("Game")},
+        {QStringLiteral("BoardGame"), QStringLiteral("Game")},
+        {QStringLiteral("BlocksGame"), QStringLiteral("Game")},
+        {QStringLiteral("CardGame"), QStringLiteral("Game")},
+        {QStringLiteral("KidsGame"), QStringLiteral("Game")},
+        {QStringLiteral("LogicGame"), QStringLiteral("Game")},
+        {QStringLiteral("RolePlaying"), QStringLiteral("Game")},
+        {QStringLiteral("Shooter"), QStringLiteral("Game")},
+        {QStringLiteral("Simulation"), QStringLiteral("Game")},
+        {QStringLiteral("SportsGame"), QStringLiteral("Game")},
+        {QStringLiteral("StrategyGame"), QStringLiteral("Game")},
+        {QStringLiteral("Graphics"), QStringLiteral("Graphics")},
+        {QStringLiteral("2DGraphics"), QStringLiteral("Graphics")},
+        {QStringLiteral("3DGraphics"), QStringLiteral("Graphics")},
+        {QStringLiteral("VectorGraphics"), QStringLiteral("Graphics")},
+        {QStringLiteral("RasterGraphics"), QStringLiteral("Graphics")},
+        {QStringLiteral("Photography"), QStringLiteral("Graphics")},
+        {QStringLiteral("Publishing"), QStringLiteral("Graphics")},
+        {QStringLiteral("Scanning"), QStringLiteral("Graphics")},
+        {QStringLiteral("OCR"), QStringLiteral("Graphics")},
+        {QStringLiteral("Viewer"), QStringLiteral("Graphics")},
+        {QStringLiteral("Network"), QStringLiteral("Network")},
+        {QStringLiteral("Dialup"), QStringLiteral("Network")},
+        {QStringLiteral("InstantMessaging"), QStringLiteral("Network")},
+        {QStringLiteral("Chat"), QStringLiteral("Network")},
+        {QStringLiteral("IRCClient"), QStringLiteral("Network")},
+        {QStringLiteral("Feed"), QStringLiteral("Network")},
+        {QStringLiteral("FileTransfer"), QStringLiteral("Network")},
+        {QStringLiteral("HamRadio"), QStringLiteral("Network")},
+        {QStringLiteral("News"), QStringLiteral("Network")},
+        {QStringLiteral("P2P"), QStringLiteral("Network")},
+        {QStringLiteral("RemoteAccess"), QStringLiteral("Network")},
+        {QStringLiteral("Telephony"), QStringLiteral("Network")},
+        {QStringLiteral("TelephonyTools"), QStringLiteral("Network")},
+        {QStringLiteral("VideoConference"), QStringLiteral("Network")},
+        {QStringLiteral("WebBrowser"), QStringLiteral("Network")},
+        {QStringLiteral("Office"), QStringLiteral("Office")},
+        {QStringLiteral("Calendar"), QStringLiteral("Office")},
+        {QStringLiteral("ContactManagement"), QStringLiteral("Office")},
+        {QStringLiteral("Database"), QStringLiteral("Office")},
+        {QStringLiteral("Dictionary"), QStringLiteral("Office")},
+        {QStringLiteral("Chart"), QStringLiteral("Office")},
+        {QStringLiteral("Email"), QStringLiteral("Office")},
+        {QStringLiteral("Finance"), QStringLiteral("Office")},
+        {QStringLiteral("FlowChart"), QStringLiteral("Office")},
+        {QStringLiteral("PDA"), QStringLiteral("Office")},
+        {QStringLiteral("Presentation"), QStringLiteral("Office")},
+        {QStringLiteral("ProjectManagement"), QStringLiteral("Office")},
+        {QStringLiteral("Spreadsheet"), QStringLiteral("Office")},
+        {QStringLiteral("WordProcessor"), QStringLiteral("Office")},
+        {QStringLiteral("Science"), QStringLiteral("Science")},
+        {QStringLiteral("Astronomy"), QStringLiteral("Science")},
+        {QStringLiteral("Biology"), QStringLiteral("Science")},
+        {QStringLiteral("Chemistry"), QStringLiteral("Science")},
+        {QStringLiteral("ComputerScience"), QStringLiteral("Science")},
+        {QStringLiteral("DataVisualization"), QStringLiteral("Science")},
+        {QStringLiteral("Economy"), QStringLiteral("Science")},
+        {QStringLiteral("Electricity"), QStringLiteral("Science")},
+        {QStringLiteral("Geography"), QStringLiteral("Science")},
+        {QStringLiteral("Geology"), QStringLiteral("Science")},
+        {QStringLiteral("Geoscience"), QStringLiteral("Science")},
+        {QStringLiteral("History"), QStringLiteral("Science")},
+        {QStringLiteral("Humanities"), QStringLiteral("Science")},
+        {QStringLiteral("ImageProcessing"), QStringLiteral("Science")},
+        {QStringLiteral("Languages"), QStringLiteral("Science")},
+        {QStringLiteral("Literature"), QStringLiteral("Science")},
+        {QStringLiteral("Maps"), QStringLiteral("Science")},
+        {QStringLiteral("Math"), QStringLiteral("Science")},
+        {QStringLiteral("NumericalAnalysis"), QStringLiteral("Science")},
+        {QStringLiteral("MedicalSoftware"), QStringLiteral("Science")},
+        {QStringLiteral("Physics"), QStringLiteral("Science")},
+        {QStringLiteral("Robotics"), QStringLiteral("Science")},
+        {QStringLiteral("ArtificialIntelligence"), QStringLiteral("Science")},
+        {QStringLiteral("Electronics"), QStringLiteral("Science")},
+        {QStringLiteral("Engineering"), QStringLiteral("Science")},
+        {QStringLiteral("Settings"), QStringLiteral("Settings")},
+        {QStringLiteral("Accessibility"), QStringLiteral("Settings")},
+        {QStringLiteral("DesktopSettings"), QStringLiteral("Settings")},
+        {QStringLiteral("HardwareSettings"), QStringLiteral("Settings")},
+        {QStringLiteral("PackageManager"), QStringLiteral("Settings")},
+        {QStringLiteral("Printing"), QStringLiteral("Settings")},
+        {QStringLiteral("Security"), QStringLiteral("Settings")},
+        {QStringLiteral("System"), QStringLiteral("System")},
+        {QStringLiteral("Emulator"), QStringLiteral("System")},
+        {QStringLiteral("FileTools"), QStringLiteral("System")},
+        {QStringLiteral("FileManager"), QStringLiteral("System")},
+        {QStringLiteral("TerminalEmulator"), QStringLiteral("System")},
+        {QStringLiteral("Filesystem"), QStringLiteral("System")},
+        {QStringLiteral("Monitor"), QStringLiteral("System")},
+        {QStringLiteral("Utility"), QStringLiteral("Utility")},
+        {QStringLiteral("Archiving"), QStringLiteral("Utility")},
+        {QStringLiteral("Calculator"), QStringLiteral("Utility")},
+        {QStringLiteral("Clock"), QStringLiteral("Utility")},
+        {QStringLiteral("Compression"), QStringLiteral("Utility")},
+        {QStringLiteral("TextEditor"), QStringLiteral("Utility")},
+        {QStringLiteral("TextTools"), QStringLiteral("Utility")},
+        {QStringLiteral("Core"), QStringLiteral("Utility")},
+    };
+    return alias.value(token);
+}
+QString categoryIconName(const QString &key)
+{
+    if (key == QLatin1String("AudioVideo")) return QStringLiteral("applications-multimedia");
+    if (key == QLatin1String("Development")) return QStringLiteral("applications-development");
+    if (key == QLatin1String("Education")) return QStringLiteral("applications-education");
+    if (key == QLatin1String("Game")) return QStringLiteral("applications-games");
+    if (key == QLatin1String("Graphics")) return QStringLiteral("applications-graphics");
+    if (key == QLatin1String("Network")) return QStringLiteral("applications-internet");
+    if (key == QLatin1String("Office")) return QStringLiteral("applications-office");
+    if (key == QLatin1String("Science")) return QStringLiteral("applications-science");
+    if (key == QLatin1String("Settings")) return QStringLiteral("preferences-system");
+    if (key == QLatin1String("System")) return QStringLiteral("applications-system");
+    if (key == QLatin1String("Utility")) return QStringLiteral("applications-utilities");
+    return QStringLiteral("folder");
+}
+QIcon appIcon(GAppInfo *info)
+{
+    GIcon *icon = g_app_info_get_icon(info);
+    if (!icon) return {};
+    if (G_IS_THEMED_ICON(icon)) {
+        const auto names = g_themed_icon_get_names(G_THEMED_ICON(icon));
+        for (int i = 0; names && names[i]; ++i) {
+            const QIcon theme = QIcon::fromTheme(QString::fromUtf8(names[i]));
+            if (!theme.isNull()) return theme;
+        }
+    } else if (G_IS_FILE_ICON(icon)) {
+        char *file = g_file_get_path(g_file_icon_get_file(G_FILE_ICON(icon)));
+        QIcon result;
+        if (file) result = QIcon(QString::fromUtf8(file));
+        g_free(file);
+        return result;
+    }
+    return {};
+}
 }
 AppShortcutsController::AppShortcutsController(QObject *parent, QString directory, TestLauncher launcher)
     : QObject(parent), m_directory(directory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/AppShortcuts" : directory),
@@ -77,13 +250,7 @@ AppShortcutsController::AppShortcutsController(QObject *parent, QString director
 {
     load();
     refresh();
-    // 桥接 KDE 菜单：装/卸应用或改菜单后 KSycoca 会重建，界面自动同步。
-    if (auto *sycoca = KSycoca::self())
-        connect(sycoca, &KSycoca::databaseChanged, this, [this] {
-            m_catalogReady = false;
-            ++m_catalogRevision;
-            emit changed();
-        });
+    bindCatalogMonitor();
 }
 QString AppShortcutsController::normalizeName(const QString &value) {
     const auto text = value.trimmed();
@@ -226,14 +393,88 @@ QVariantMap AppShortcutsController::applicationCatalog()
         updateFavorites();
         return m_catalog;
     }
-    if (auto *sycoca = KSycoca::self()) sycoca->ensureCacheValid();
-
-    // 桥接 KDE 自己的菜单模型（KServiceGroup），类别、名称与归组和 Kickoff 一致。
+    if (m_catalogSource == QStringLiteral("kde") && kdeCatalogAvailable()) {
+#ifdef HAVE_KSERVICE
+        if (auto *sycoca = KSycoca::self()) sycoca->ensureCacheValid();
+#endif
+        m_catalog = kdeCatalog();
+    } else {
+        m_catalog = desktopCatalog();
+    }
+    m_catalogReady = true;
+    return m_catalog;
+}
+QVariantMap AppShortcutsController::desktopCatalog()
+{
     QVariantList apps;
     QVariantList categories;
-    QHash<QString, int> index;      // storageId -> apps 下标
-    QHash<QString, int> groupSeen;  // relPath -> categories 下标
-
+    QHash<QString, int> index;
+    QHash<QString, QStringList> membership;
+    const auto favorites = favoriteOrder();
+    const QStringList order{
+        QStringLiteral("AudioVideo"), QStringLiteral("Development"), QStringLiteral("Education"),
+        QStringLiteral("Game"), QStringLiteral("Graphics"), QStringLiteral("Network"),
+        QStringLiteral("Office"), QStringLiteral("Science"), QStringLiteral("Settings"),
+        QStringLiteral("System"), QStringLiteral("Utility")};
+    GList *list = g_app_info_get_all();
+    for (GList *item = list; item; item = item->next) {
+        auto *info = static_cast<GAppInfo *>(item->data);
+        if (!G_IS_DESKTOP_APP_INFO(info) || !g_app_info_should_show(info)) continue;
+        auto *desktop = G_DESKTOP_APP_INFO(info);
+        const char *filename = g_desktop_app_info_get_filename(desktop);
+        const char *id = g_app_info_get_id(info);
+        const char *display = g_app_info_get_display_name(info);
+        if (!filename || !*filename || !id || !*id || !display || !*display) continue;
+        const QString storageId = QString::fromUtf8(id);
+        const QString path = QString::fromUtf8(filename);
+        QStringList keys;
+        if (const char *raw = g_desktop_app_info_get_categories(desktop)) {
+            for (const auto &token : QString::fromUtf8(raw).split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+                const QString key = mainCategoryKey(token.trimmed());
+                if (!key.isEmpty() && !keys.contains(key)) keys.append(key);
+            }
+        }
+        if (!index.contains(storageId)) {
+            index.insert(storageId, apps.size());
+            const char *executable = g_app_info_get_executable(info);
+            apps.append(QVariantMap{{"path", path}, {"name", QString::fromUtf8(display)},
+                {"executable", executable ? QString::fromUtf8(executable) : QString()},
+                {"icon", encodedIcon(appIcon(info))}, {"categories", keys}, {"storageId", storageId},
+                {"favorite", favorites.value(storageId, -1)}});
+            membership.insert(storageId, keys);
+        } else if (membership.value(storageId) != keys) {
+            auto row = apps.at(index.value(storageId)).toMap();
+            auto merged = row.value(QStringLiteral("categories")).toStringList();
+            for (const auto &key : keys) if (!merged.contains(key)) merged.append(key);
+            row[QStringLiteral("categories")] = merged;
+            apps[index.value(storageId)] = row;
+            membership.insert(storageId, merged);
+        }
+    }
+    g_list_free_full(list, g_object_unref);
+    std::sort(apps.begin(), apps.end(), [](const QVariant &left, const QVariant &right) {
+        return QString::localeAwareCompare(left.toMap().value(QStringLiteral("name")).toString(),
+            right.toMap().value(QStringLiteral("name")).toString()) < 0;
+    });
+    for (const auto &key : order) {
+        const bool used = std::any_of(apps.cbegin(), apps.cend(), [&](const QVariant &value) {
+            return value.toMap().value(QStringLiteral("categories")).toStringList().contains(key);
+        });
+        if (!used) continue;
+        QString icon = iconData(categoryIconName(key), 64, QColor(QStringLiteral("#2E2E2E")));
+        if (icon.isEmpty()) icon = iconData(QStringLiteral("folder"), 64, QColor(QStringLiteral("#2E2E2E")));
+        categories.append(QVariantMap{{"key", key}, {"title", categoryTitle(key)}, {"icon", icon}});
+    }
+    return {{"categories", categories}, {"apps", apps}};
+}
+QVariantMap AppShortcutsController::kdeCatalog()
+{
+#ifdef HAVE_KSERVICE
+    // 仅在用户选择 KDE 菜单时使用。类别、名称与归组和 Kickoff 一致。
+    QVariantList apps;
+    QVariantList categories;
+    QHash<QString, int> index;
+    QHash<QString, int> groupSeen;
     const auto favorites = favoriteOrder();
     const auto appendService = [&](const KSycocaEntry::Ptr &entry, const QString &groupKey) {
         const auto *service = static_cast<const KService *>(entry.data());
@@ -244,7 +485,7 @@ QVariantMap AppShortcutsController::applicationCatalog()
             index.insert(id, apps.size());
             apps.append(QVariantMap{{"path", service->entryPath()}, {"name", service->name()},
                 {"executable", service->exec()}, {"icon", iconData(service->icon())},
-                {"categories", QVariantList{groupKey}}, {"storageId", id},
+                {"categories", QStringList{groupKey}}, {"storageId", id},
                 {"favorite", favorites.value(id, -1)}});
         } else {
             auto row = apps.at(index.value(id)).toMap();
@@ -254,14 +495,12 @@ QVariantMap AppShortcutsController::applicationCatalog()
             apps[index.value(id)] = row;
         }
     };
-
     const auto gather = [](KServiceGroup *node, KSycocaEntry::List &out, auto &&self) -> void {
         for (const auto &entry : node->entries(true, true)) {
             if (entry->isType(KST_KServiceGroup)) self(static_cast<KServiceGroup *>(entry.data()), out, self);
             else if (entry->isType(KST_KService)) out.append(entry);
         }
     };
-
     if (const auto root = KServiceGroup::root()) {
         for (const auto &entry : root->entries(true, true)) {
             if (!entry->isType(KST_KServiceGroup)) continue;
@@ -281,10 +520,132 @@ QVariantMap AppShortcutsController::applicationCatalog()
             for (const auto &service : services) appendService(service, key);
         }
     }
-
-    m_catalog = QVariantMap{{"categories", categories}, {"apps", apps}};
-    m_catalogReady = true;
-    return m_catalog;
+    return {{"categories", categories}, {"apps", apps}};
+#else
+    return {};
+#endif
+}
+QString AppShortcutsController::categoryTitle(const QString &key) const
+{
+    if (key == QLatin1String("AudioVideo")) return tr("影音");
+    if (key == QLatin1String("Development")) return tr("开发");
+    if (key == QLatin1String("Education")) return tr("教育");
+    if (key == QLatin1String("Game")) return tr("游戏");
+    if (key == QLatin1String("Graphics")) return tr("图形");
+    if (key == QLatin1String("Network")) return tr("网络");
+    if (key == QLatin1String("Office")) return tr("办公");
+    if (key == QLatin1String("Science")) return tr("科学");
+    if (key == QLatin1String("Settings")) return tr("设置");
+    if (key == QLatin1String("System")) return tr("系统");
+    if (key == QLatin1String("Utility")) return tr("工具");
+    return key;
+}
+QString AppShortcutsController::catalogAppName(const QString &path) const
+{
+    for (const auto &value : m_catalog.value(QStringLiteral("apps")).toList()) {
+        const auto row = value.toMap();
+        if (row.value(QStringLiteral("path")).toString() == path) return row.value(QStringLiteral("name")).toString();
+    }
+    return {};
+}
+bool AppShortcutsController::kdeCatalogAvailable() const
+{
+#ifdef HAVE_KSERVICE
+    return true;
+#else
+    return false;
+#endif
+}
+QVariantList AppShortcutsController::catalogSources() const
+{
+    QVariantList result{QVariantMap{{"key", QStringLiteral("desktop")}, {"title", tr("桌面文件分类")}}};
+    if (kdeCatalogAvailable())
+        result.append(QVariantMap{{"key", QStringLiteral("kde")}, {"title", tr("KDE 应用菜单")}});
+    return result;
+}
+void AppShortcutsController::invalidateCatalog()
+{
+    m_catalogReady = false;
+    ++m_catalogRevision;
+    emit changed();
+}
+void AppShortcutsController::bindCatalogMonitor()
+{
+    if (m_sycocaConnection) {
+        QObject::disconnect(m_sycocaConnection);
+        m_sycocaConnection = {};
+    }
+    if (m_appWatcher) m_appWatcher->removePaths(m_appWatcher->directories());
+#ifdef HAVE_KSERVICE
+    if (m_catalogSource == QStringLiteral("kde")) {
+        if (auto *sycoca = KSycoca::self())
+            m_sycocaConnection = connect(sycoca, &KSycoca::databaseChanged, this, [this] { invalidateCatalog(); });
+        return;
+    }
+#endif
+    if (!m_appRefresh) {
+        m_appRefresh = new QTimer(this);
+        m_appRefresh->setSingleShot(true);
+        m_appRefresh->setInterval(400);
+        connect(m_appRefresh, &QTimer::timeout, this, [this] { invalidateCatalog(); });
+    }
+    if (!m_appWatcher) {
+        m_appWatcher = new QFileSystemWatcher(this);
+        connect(m_appWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_appRefresh->start(); });
+    }
+    QStringList dirs;
+    const auto add = [&](const QString &dir) {
+        if (dir.isEmpty() || dirs.contains(dir) || !QDir(dir).exists()) return;
+        dirs.append(dir);
+    };
+    for (const auto &root : QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation))
+        add(root + QStringLiteral("/applications"));
+    add(QStringLiteral("/usr/share/applications"));
+    add(QStringLiteral("/usr/local/share/applications"));
+    add(QDir::homePath() + QStringLiteral("/.local/share/flatpak/exports/share/applications"));
+    add(QStringLiteral("/var/lib/flatpak/exports/share/applications"));
+    add(QStringLiteral("/var/lib/snapd/desktop/applications"));
+    for (const auto &root : qEnvironmentVariable("XDG_DATA_DIRS").split(QLatin1Char(':'), Qt::SkipEmptyParts))
+        add(QDir(root).filePath(QStringLiteral("applications")));
+    if (!dirs.isEmpty()) m_appWatcher->addPaths(dirs);
+}
+void AppShortcutsController::setCatalogSource(const QString &source)
+{
+    const QString requested = source == QStringLiteral("kde") ? QStringLiteral("kde") : QStringLiteral("desktop");
+    const QString next = requested == QStringLiteral("kde") && kdeCatalogAvailable() ? QStringLiteral("kde") : QStringLiteral("desktop");
+    const bool changed = next != m_catalogSource;
+    m_catalogSource = next;
+    if (changed) {
+        invalidateCatalog();
+        bindCatalogMonitor();
+        emit catalogSourceChanged();
+        clampHomeCategory();
+    } else if (next != requested) {
+        emit catalogSourceChanged();
+    }
+}
+void AppShortcutsController::setHomeCategory(const QString &key)
+{
+    const QString next = key.trimmed().isEmpty() ? QStringLiteral("all") : key.trimmed();
+    if (next == m_homeCategory) return;
+    m_homeCategory = next;
+    emit homeCategoryChanged();
+}
+void AppShortcutsController::clampHomeCategory()
+{
+    QString next = QStringLiteral("all");
+    for (const auto &value : launchCategories())
+        if (value.toMap().value(QStringLiteral("key")).toString() == m_homeCategory) { next = m_homeCategory; break; }
+    if (next == m_homeCategory) return;
+    m_homeCategory = next;
+    emit homeCategoryChanged();
+}
+void AppShortcutsController::applyHomeCategory()
+{
+    clampHomeCategory();
+    if (m_homeCategory == m_launchCategory) return;
+    m_launchCategory = m_homeCategory;
+    emit launchCategoryChanged();
 }
 QVariantList AppShortcutsController::launchCategories()
 {
@@ -393,12 +754,9 @@ void AppShortcutsController::launchPending()
         const auto path = std::exchange(m_pendingPath, {});
         const QFileInfo info(path);
         if (!info.isFile()) { fail(tr("应用已移除，请刷新列表。")); emit launchFailed(); return; }
-        QString name = info.completeBaseName();
-        for (const auto &value : m_catalog) {
-            const auto row = value.toMap();
-            if (row.value(QStringLiteral("path")).toString() == path) { name = row.value(QStringLiteral("name")).toString(); break; }
-        }
-        launchFile(path, name);
+        if (!m_catalogReady) applicationCatalog();
+        const QString found = catalogAppName(path);
+        launchFile(path, found.isEmpty() ? info.completeBaseName() : found);
         return;
     }
     if (m_pending.isEmpty()) return;

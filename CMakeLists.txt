@@ -9,8 +9,8 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network DBus WebSockets Qml Quick OpenGL ShaderTools Concurrent Sql Multimedia Pdf WebEngineWidgets)
 find_package(LayerShellQt REQUIRED)
-# 桥接 KDE 应用菜单模型（KServiceGroup）用于应用启动器。
-find_package(KF6Service REQUIRED)
+# KDE 应用菜单。未安装时仍用桌面文件分类，其他桌面可以编译。
+find_package(KF6Service QUIET)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
 pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm>=0.3.3)
@@ -327,7 +327,6 @@ target_link_libraries(hyprendfield PRIVATE
     Qt6::Multimedia
     Qt6::Pdf
     LayerShellQt::Interface
-    KF6::Service
     PkgConfig::PULSE
     PkgConfig::VTERM
     PkgConfig::WAYLAND_CLIENT
@@ -336,6 +335,11 @@ target_link_libraries(hyprendfield PRIVATE
     PkgConfig::LIBZIP
     util
 )
+
+if(KF6Service_FOUND)
+    target_link_libraries(hyprendfield PRIVATE KF6::Service)
+    target_compile_definitions(hyprendfield PRIVATE HAVE_KSERVICE)
+endif()
 
 target_compile_options(hyprendfield PRIVATE
     -Wall
@@ -505,7 +509,11 @@ if(BUILD_TESTING)
     add_test(NAME event_log COMMAND hyprendfield_event_log_tests)
     qt_add_executable(hyprendfield_shortcut_tests tests/app_shortcuts.cpp src/appshortcutscontroller.cpp)
     target_include_directories(hyprendfield_shortcut_tests PRIVATE src)
-    target_link_libraries(hyprendfield_shortcut_tests PRIVATE Qt6::Quick Qt6::Widgets Qt6::Test PkgConfig::GIO)
+    target_link_libraries(hyprendfield_shortcut_tests PRIVATE Qt6::Quick Qt6::Widgets Qt6::Sql Qt6::Test PkgConfig::GIO)
+    if(KF6Service_FOUND)
+        target_link_libraries(hyprendfield_shortcut_tests PRIVATE KF6::Service)
+        target_compile_definitions(hyprendfield_shortcut_tests PRIVATE HAVE_KSERVICE)
+    endif()
     target_compile_definitions(hyprendfield_shortcut_tests PRIVATE SHORTCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" SHORTCUT_PREVIEW_DIR="${CMAKE_BINARY_DIR}")
     qt_add_resources(hyprendfield_shortcut_tests "shortcut_test_assets" PREFIX "/" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${SHORTCUT_ASSETS})
     add_test(NAME app_shortcuts COMMAND hyprendfield_shortcut_tests)

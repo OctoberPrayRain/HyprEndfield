@@ -4,7 +4,7 @@ import QtQuick.Controls
 import QtQuick.Shapes
 import "Appearance.js" as Appearance
 
-// 桥接 KDE 应用菜单（KServiceGroup）：类别在右侧卡片区，中央显示图标网格。
+// 分类启动器：右侧卡片切换类别，中央图标网格点击后用 gio launch 打开。
 Item {
     id: root
     width: 590; height: 510
@@ -14,6 +14,7 @@ Item {
     readonly property string category: appShortcutsController.launchCategory
     readonly property var appsList: catalogData.apps || []
 
+    readonly property string launchError: appShortcutsController.state.error || ""
     readonly property var visibleApps: {
         if (category === "all") return appsList
         if (category === "frequent") {
@@ -37,7 +38,7 @@ Item {
     // 中央图标区
     GridView {
         id: grid; objectName: "appLauncherGrid"
-        x: 55; y: 64; width: 438; height: 422
+        x: 55; y: 64; width: 438; height: root.launchError ? 400 : 422
         cellWidth: 109; cellHeight: 98; clip: true
         model: root.visibleApps; boundsBehavior: Flickable.StopAtBounds
         delegate: Item {
@@ -76,14 +77,20 @@ Item {
     Text {
         x: 55; y: 250; width: 438; horizontalAlignment: Text.AlignHCenter
         visible: root.visibleApps.length === 0
-        text: root.category === "frequent" ? qsTr("还没有常用记录，从“全部应用程序”里启动一次即可") : qsTr("此类别暂无应用")
+        text: root.category === "frequent" ? qsTr("没有可显示的常用应用") : qsTr("此类别暂无应用")
         color: Appearance.tone("#777777"); wrapMode: Text.Wrap
         font.family: harmonyMedium.name; font.pixelSize: 12; renderType: Text.CurveRendering
     }
 
     Text {
+        x: 55; y: 468; width: 438; visible: root.launchError !== ""
+        text: root.launchError; color: "#E6B56B"; wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+        font.family: harmonyRegular.name; font.pixelSize: 11; renderType: Text.CurveRendering
+    }
+
+    Text {
         x: 0; y: 506; width: 590
-        text: root.category === "frequent" ? qsTr("来自 KDE 收藏列表") : qsTr("共 %1 个应用").arg(root.visibleApps.length)
+        text: qsTr("共 %1 个应用").arg(root.visibleApps.length)
         color: "#6E6E6E"; font.family: harmonyRegular.name; font.pixelSize: 10; renderType: Text.CurveRendering
     }
 }
