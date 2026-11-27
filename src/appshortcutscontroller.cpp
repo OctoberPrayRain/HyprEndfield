@@ -142,7 +142,7 @@ QString mainCategoryKey(const QString &token)
         {QStringLiteral("P2P"), QStringLiteral("Network")},
         {QStringLiteral("RemoteAccess"), QStringLiteral("Network")},
         {QStringLiteral("Telephony"), QStringLiteral("Network")},
-        {QStringLiteral("TelephonyTools"), QStringLiteral("Network")},
+        {QStringLiteral("TelephonyTools"), QStringLiteral("Utility")},
         {QStringLiteral("VideoConference"), QStringLiteral("Network")},
         {QStringLiteral("WebBrowser"), QStringLiteral("Network")},
         {QStringLiteral("Office"), QStringLiteral("Office")},
@@ -182,8 +182,6 @@ QString mainCategoryKey(const QString &token)
         {QStringLiteral("Physics"), QStringLiteral("Science")},
         {QStringLiteral("Robotics"), QStringLiteral("Science")},
         {QStringLiteral("ArtificialIntelligence"), QStringLiteral("Science")},
-        {QStringLiteral("Electronics"), QStringLiteral("Science")},
-        {QStringLiteral("Engineering"), QStringLiteral("Science")},
         {QStringLiteral("Settings"), QStringLiteral("Settings")},
         {QStringLiteral("Accessibility"), QStringLiteral("Settings")},
         {QStringLiteral("DesktopSettings"), QStringLiteral("Settings")},
@@ -205,7 +203,8 @@ QString mainCategoryKey(const QString &token)
         {QStringLiteral("Compression"), QStringLiteral("Utility")},
         {QStringLiteral("TextEditor"), QStringLiteral("Utility")},
         {QStringLiteral("TextTools"), QStringLiteral("Utility")},
-        {QStringLiteral("Core"), QStringLiteral("Utility")},
+        // Core、Electronics、Engineering 的关联项为空，不指定主分类。
+        // TelephonyTools 的关联项是 Utility，已在上面映射。
     };
     return alias.value(token);
 }
@@ -402,6 +401,7 @@ QVariantMap AppShortcutsController::applicationCatalog()
         m_catalog = desktopCatalog();
     }
     m_catalogReady = true;
+    ++m_catalogBuilds;
     return m_catalog;
 }
 QVariantMap AppShortcutsController::desktopCatalog()
@@ -578,6 +578,8 @@ void AppShortcutsController::bindCatalogMonitor()
     if (m_appWatcher) m_appWatcher->removePaths(m_appWatcher->directories());
 #ifdef HAVE_KSERVICE
     if (m_catalogSource == QStringLiteral("kde")) {
+        if (m_appRefresh) m_appRefresh->stop();
+        m_rebindOnRefresh = m_invalidateOnRefresh = false;
         if (auto *sycoca = KSycoca::self())
             m_sycocaConnection = connect(sycoca, &KSycoca::databaseChanged, this, [this] { invalidateCatalog(); });
         return;
@@ -587,27 +589,81 @@ void AppShortcutsController::bindCatalogMonitor()
         m_appRefresh = new QTimer(this);
         m_appRefresh->setSingleShot(true);
         m_appRefresh->setInterval(400);
-        connect(m_appRefresh, &QTimer::timeout, this, [this] { invalidateCatalog(); });
+        connect(m_appRefresh, &QTimer::timeout, this, [this] {
+            if (m_catalogSource == QStringLiteral("kde")) {
+                m_rebindOnRefresh = m_invalidateOnRefresh = false;
+                return;
+            }
+            const bool rebind = m_rebindOnRefresh;
+            const bool invalidate = m_invalidateOnRefresh;
+            m_rebindOnRefresh = m_invalidateOnRefresh = false;
+            if (rebind) bindCatalogMonitor();
+            if (invalidate) invalidateCatalog();
+        });
     }
     if (!m_appWatcher) {
         m_appWatcher = new QFileSystemWatcher(this);
-        connect(m_appWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_appRefresh->start(); });
+        connect(m_appWatcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString &path) {
+            if (m_catalogSource == QStringLiteral("kde")) return;
+            const QString changed = QDir::cleanPath(path);
+            bool rebind = false;
+            bool invalidate = false;
+            for (const auto &dir : m_catalogDirs) {
+                if (changed == dir) {
+                    invalidate = true;
+                    rebind = !QDir(dir).exists();
+                } else if (dir.startsWith(changed + QLatin1Char('/'))) {
+                    const QString next = changed + QLatin1Char('/') + dir.mid(changed.size() + 1).section(QLatin1Char('/'), 0, 0);
+                    if (QDir(dir).exists()) {
+                        invalidate = true;
+                        rebind = true;
+                    } else if (QDir(next).exists() && !m_appWatcher->directories().contains(next)) {
+                        rebind = true;
+                    }
+                }
+            }
+            if (!rebind && !invalidate) return;
+            m_rebindOnRefresh = m_rebindOnRefresh || rebind;
+            m_invalidateOnRefresh = m_invalidateOnRefresh || invalidate;
+            m_appRefresh->start();
+        });
     }
-    QStringList dirs;
-    const auto add = [&](const QString &dir) {
-        if (dir.isEmpty() || dirs.contains(dir) || !QDir(dir).exists()) return;
-        dirs.append(dir);
+    QStringList wanted;
+    const auto want = [&](const QString &dir) {
+        const QString clean = QDir::cleanPath(dir);
+        if (clean.isEmpty() || clean == QLatin1String(".") || wanted.contains(clean)) return;
+        wanted.append(clean);
     };
     for (const auto &root : QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation))
-        add(root + QStringLiteral("/applications"));
-    add(QStringLiteral("/usr/share/applications"));
-    add(QStringLiteral("/usr/local/share/applications"));
-    add(QDir::homePath() + QStringLiteral("/.local/share/flatpak/exports/share/applications"));
-    add(QStringLiteral("/var/lib/flatpak/exports/share/applications"));
-    add(QStringLiteral("/var/lib/snapd/desktop/applications"));
+        want(root + QStringLiteral("/applications"));
+    want(QStringLiteral("/usr/share/applications"));
+    want(QStringLiteral("/usr/local/share/applications"));
+    want(QDir::homePath() + QStringLiteral("/.local/share/flatpak/exports/share/applications"));
+    want(QStringLiteral("/var/lib/flatpak/exports/share/applications"));
+    want(QStringLiteral("/var/lib/snapd/desktop/applications"));
     for (const auto &root : qEnvironmentVariable("XDG_DATA_DIRS").split(QLatin1Char(':'), Qt::SkipEmptyParts))
-        add(QDir(root).filePath(QStringLiteral("applications")));
-    if (!dirs.isEmpty()) m_appWatcher->addPaths(dirs);
+        want(QDir(root).filePath(QStringLiteral("applications")));
+    m_catalogDirs = wanted;
+    QStringList watch;
+    const auto watchAdd = [&](const QString &dir) {
+        if (dir.isEmpty() || watch.contains(dir) || !QDir(dir).exists()) return;
+        watch.append(dir);
+    };
+    for (const auto &dir : wanted) {
+        if (QDir(dir).exists()) {
+            watchAdd(dir);
+            continue;
+        }
+        // 目录还不存在时监视最近的现存父目录，才能在稍后安装时跟上。
+        QString ancestor = QFileInfo(dir).absolutePath();
+        while (!ancestor.isEmpty() && ancestor != QDir(ancestor).rootPath() && !QDir(ancestor).exists()) {
+            const QString parent = QFileInfo(ancestor).absolutePath();
+            if (parent == ancestor) break;
+            ancestor = parent;
+        }
+        watchAdd(ancestor);
+    }
+    if (!watch.isEmpty()) m_appWatcher->addPaths(watch);
 }
 void AppShortcutsController::setCatalogSource(const QString &source)
 {
@@ -633,6 +689,8 @@ void AppShortcutsController::setHomeCategory(const QString &key)
 }
 void AppShortcutsController::clampHomeCategory()
 {
+    // 这两项不查目录。启动时来源回退会走到这里，不能为此编码全部图标。
+    if (m_homeCategory == QLatin1String("all") || m_homeCategory == QLatin1String("frequent")) return;
     QString next = QStringLiteral("all");
     for (const auto &value : launchCategories())
         if (value.toMap().value(QStringLiteral("key")).toString() == m_homeCategory) { next = m_homeCategory; break; }

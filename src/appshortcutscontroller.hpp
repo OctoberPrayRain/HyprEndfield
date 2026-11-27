@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QHash>
 #include <QImage>
+#include <QStringList>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -36,6 +37,7 @@ public:
     QString homeCategory() const { return m_homeCategory; }
     bool kdeCatalogAvailable() const;
     int catalogRevision() const { return m_catalogRevision; }
+    int catalogBuilds() const { return m_catalogBuilds; }
     Q_INVOKABLE QVariantList catalogSources() const;
     Q_INVOKABLE void setCatalogSource(const QString &source);
     Q_INVOKABLE void setHomeCategory(const QString &key);
@@ -82,12 +84,16 @@ private:
     QHash<QString, App> m_apps;
     QByteArray m_saved;
     int m_catalogRevision = 0;
+    int m_catalogBuilds = 0;
     QVariantMap m_catalog;
     QString m_pendingPath, m_launchCategory = QStringLiteral("all");
     QString m_catalogSource = QStringLiteral("desktop");
     QString m_homeCategory = QStringLiteral("all");
     QFileSystemWatcher *m_appWatcher = nullptr;
     QTimer *m_appRefresh = nullptr;
+    QStringList m_catalogDirs;
+    bool m_rebindOnRefresh = false;
+    bool m_invalidateOnRefresh = false;
     QMetaObject::Connection m_sycocaConnection;
     bool m_catalogReady = false;
     bool m_readable = true, m_launching = false;
