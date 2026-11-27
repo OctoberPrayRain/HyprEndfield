@@ -37,7 +37,13 @@ TerminalView::TerminalView(QQuickItem *parent) : QQuickPaintedItem(parent)
     setFlag(ItemAcceptsInputMethod, true);
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton | Qt::RightButton);
     setClip(true); setAntialiasing(true); setOpaquePainting(true);
-    m_font = QFont(QStringLiteral("JetBrainsMono Nerd Font Mono"));
+    // 优先 Nerd Font（zsh/p10k 的图标需要），缺失时按顺序回退到已安装等宽字体。
+    m_font = QFont();
+    m_font.setFamilies({QStringLiteral("JetBrainsMono Nerd Font Mono"),
+                        QStringLiteral("JetBrainsMono Nerd Font"),
+                        QStringLiteral("MesloLGS NF"),
+                        QStringLiteral("Symbols Nerd Font Mono"),
+                        QStringLiteral("Noto Sans Mono")});
     m_font.setStyleHint(QFont::Monospace); m_font.setPixelSize(13);
     const QFontMetricsF metrics(m_font);
     m_cellWidth = metrics.horizontalAdvance(QLatin1Char('M'));

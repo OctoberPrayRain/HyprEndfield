@@ -2,6 +2,8 @@
 #include "terminalsession.hpp"
 
 #include <QDir>
+#include <QFileInfo>
+#include <pwd.h>
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
@@ -13,6 +15,20 @@
 
 namespace {
 constexpr int historyLimit = 2000;
+
+// chsh 修改的登录 shell 就是 /etc/passwd 里的 pw_shell；$SHELL 作为回退。
+QString loginShell() {
+    if (const auto *pw = getpwuid(getuid()); pw && pw->pw_shell && *pw->pw_shell) {
+        const QFileInfo info(QString::fromLocal8Bit(pw->pw_shell));
+        if (info.isExecutable()) return info.absoluteFilePath();
+    }
+    const auto environment = qEnvironmentVariable("SHELL");
+    if (!environment.isEmpty()) {
+        const QFileInfo info(environment);
+        if (info.isExecutable()) return info.absoluteFilePath();
+    }
+    return QStringLiteral("/bin/sh");
+}
 }
 
 TerminalSession::TerminalSession(QObject *parent) : QObject(parent)
@@ -36,7 +52,10 @@ TerminalSession::TerminalSession(QObject *parent) : QObject(parent)
     vterm_color_rgb(&background, 23, 23, 23);
     vterm_screen_set_default_colors(m_screen, &foreground, &background);
     vterm_screen_reset(m_screen, 1);
-    connect(&m_process, &QProcess::started, this, [this] { closeSlave(); setStatus(QStringLiteral("BASH")); });
+    connect(&m_process, &QProcess::started, this, [this] {
+        closeSlave();
+        setStatus(m_shellLabel.isEmpty() ? QStringLiteral("SHELL") : m_shellLabel);
+    });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             closePty(); setStatus(QCoreApplication::translate("HyprEndfield", "终端启动失败：") + m_process.errorString());
@@ -66,7 +85,9 @@ TerminalSession::~TerminalSession()
 
 void TerminalSession::startDefault()
 {
-    start(QStringLiteral("/usr/bin/bash"), {QStringLiteral("-i")}, QDir::homePath());
+    const auto shell = loginShell();
+    m_shellLabel = QFileInfo(shell).fileName().toUpper();
+    start(shell, {QStringLiteral("-i")}, QDir::homePath());
 }
 void TerminalSession::start(const QString &program, const QStringList &arguments, const QString &directory,
                             const QProcessEnvironment &environment)
