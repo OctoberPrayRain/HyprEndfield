@@ -12,6 +12,7 @@ Item {
     height: 640
 
     property string selectedModule: "system"
+    property string previousModule: "system"
     readonly property bool accountVisible: appController.hudOpen
     readonly property bool accountPageVisible: accountVisible && selectedModule === "account"
     function updateAccountVisibility() { if (typeof accountController !== "undefined") accountController.setVisible(accountVisible, accountPageVisible); }
@@ -147,20 +148,38 @@ Item {
         }
     ]
 
-    readonly property var rightButtons: displaySettings.moduleOrder
+    readonly property bool appLauncherActive: selectedModule === "addApp"
+    readonly property var launcherButtons: {
+        if (typeof appShortcutsController === "undefined") return []
+        // 依赖分类目录版本，装/卸应用后右侧类别自动同步。
+        const revision = appShortcutsController.catalogRevision
+        return [{ key: "category:back", backToMenu: true, label: qsTr("返回上级"), glyph: "back" }]
+            .concat(appShortcutsController.launchCategories().map(category => ({
+            key: "category:" + category.key,
+            launchCategory: category.key,
+            label: category.title,
+            icon: category.icon
+        })))
+    }
+    readonly property var rightButtons: appLauncherActive ? launcherButtons : displaySettings.moduleOrder
         .filter(key => !displaySettings.hiddenModules.includes(key))
         .map(key => availableRightButtons.find(entry => entry.key === key)).filter(Boolean)
         .concat(typeof appShortcutsController === "undefined" ? [] : appShortcutsController.state.items.map(app => ({
             key: "shortcut:" + app.id, shortcutId: app.id, label: app.name, icon: app.icon
         })))
-        .concat([{key: "addApp", label: qsTr("+ 添加应用"), glyph: "addApp"}])
+        .concat([{key: "addApp", label: qsTr("应用程序"), glyph: "addApp"}])
     Connections {
         target: typeof appShortcutsController === "undefined" ? null : appShortcutsController
         function onLaunchFailed() { shell.selectedModule = "addApp" }
     }
+    onAppLauncherActiveChanged: {
+        rightScrollOffset = 0
+        if (appLauncherActive && typeof appShortcutsController !== "undefined")
+            appShortcutsController.applyHomeCategory()
+    }
     onRightButtonsChanged: {
         rightScrollOffset = Math.min(maximumRightScrollOffset, rightScrollOffset);
-        if (availableRightButtons.some(entry => entry.key === selectedModule)
+        if (!appLauncherActive && availableRightButtons.some(entry => entry.key === selectedModule)
                 && !rightButtons.some(entry => entry.key === selectedModule)) selectedModule = rightButtons[0].key;
     }
     function updateClock() {
@@ -325,4 +344,8 @@ Item {
     }
 
     Component.onCompleted: updateClock()
+
+
+
+
 }

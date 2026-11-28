@@ -1,25 +1,52 @@
 #pragma once
 #include <QObject>
 #include <QColor>
+#include <QHash>
 #include <QImage>
+#include <QStringList>
 #include <QUrl>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QQuickImageProvider>
 #include <functional>
 #include <optional>
+
+class QFileSystemWatcher;
+class QTimer;
 
 // AppShortcutStore/Canvas rules, with .desktop references and GIO launching on Linux.
 class AppShortcutsController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantMap state READ state NOTIFY changed)
     Q_PROPERTY(QVariantList presets READ presets NOTIFY changed)
+    Q_PROPERTY(QString launchCategory READ launchCategory WRITE setLaunchCategory NOTIFY launchCategoryChanged)
+    Q_PROPERTY(QString catalogSource READ catalogSource NOTIFY catalogSourceChanged)
+    Q_PROPERTY(QString homeCategory READ homeCategory NOTIFY homeCategoryChanged)
+    Q_PROPERTY(bool kdeCatalogAvailable READ kdeCatalogAvailable CONSTANT)
+    Q_PROPERTY(int catalogRevision READ catalogRevision NOTIFY changed)
 public:
     using TestLauncher = std::function<QString(const QString &)>;
     explicit AppShortcutsController(QObject *parent = nullptr, QString directory = {}, TestLauncher launcher = {});
     QVariantMap state() const;
     QVariantList presets() const;
     QImage artwork(const QString &id, const QString &preset, QColor accent, QSize size) const;
+    Q_INVOKABLE QVariantMap applicationCatalog();
+    Q_INVOKABLE QVariantList launchCategories();
+    QString launchCategory() const { return m_launchCategory; }
+    QString catalogSource() const { return m_catalogSource; }
+    QString homeCategory() const { return m_homeCategory; }
+    bool kdeCatalogAvailable() const;
+    int catalogRevision() const { return m_catalogRevision; }
+    int catalogBuilds() const { return m_catalogBuilds; }
+    Q_INVOKABLE QVariantList catalogSources() const;
+    Q_INVOKABLE void setCatalogSource(const QString &source);
+    Q_INVOKABLE void setHomeCategory(const QString &key);
+    Q_INVOKABLE void clampHomeCategory();
+    Q_INVOKABLE void applyHomeCategory();
+    Q_INVOKABLE void invalidateCatalog();
+    Q_INVOKABLE void setLaunchCategory(const QString &key);
     Q_INVOKABLE bool add(const QUrl &url);
+    Q_INVOKABLE bool requestOpenPath(const QString &path);
     Q_INVOKABLE bool rename(const QString &id, const QString &name);
     Q_INVOKABLE bool setIcon(const QString &id, const QString &preset);
     Q_INVOKABLE bool remove(const QString &id);
@@ -33,10 +60,21 @@ signals:
     void launchFailed();
     void opened(const QString &name);
     void added(const QString &id);
+    void launchCategoryChanged();
+    void catalogSourceChanged();
+    void homeCategoryChanged();
 private:
     struct Entry { QString id, name, originalName, path, executable, iconPreset; qint64 created = 0; };
     struct App { QString name, executable; QImage icon; QColor color = QColor("#2A2A2A"); };
     std::optional<App> inspect(const QString &path) const;
+    QHash<QString, int> favoriteOrder() const;
+    void updateFavorites();
+    void launchFile(const QString &path, const QString &name);
+    QVariantMap desktopCatalog();
+    QVariantMap kdeCatalog();
+    void bindCatalogMonitor();
+    QString categoryTitle(const QString &key) const;
+    QString catalogAppName(const QString &path) const;
     void load();
     bool commit(const QList<Entry> &next);
     bool fail(const QString &message);
@@ -45,6 +83,19 @@ private:
     QList<Entry> m_entries;
     QHash<QString, App> m_apps;
     QByteArray m_saved;
+    int m_catalogRevision = 0;
+    int m_catalogBuilds = 0;
+    QVariantMap m_catalog;
+    QString m_pendingPath, m_launchCategory = QStringLiteral("all");
+    QString m_catalogSource = QStringLiteral("desktop");
+    QString m_homeCategory = QStringLiteral("all");
+    QFileSystemWatcher *m_appWatcher = nullptr;
+    QTimer *m_appRefresh = nullptr;
+    QStringList m_catalogDirs;
+    bool m_rebindOnRefresh = false;
+    bool m_invalidateOnRefresh = false;
+    QMetaObject::Connection m_sycocaConnection;
+    bool m_catalogReady = false;
     bool m_readable = true, m_launching = false;
     TestLauncher m_testLauncher;
 };
