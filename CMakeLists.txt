@@ -9,8 +9,8 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network DBus WebSockets Qml Quick OpenGL ShaderTools Concurrent Sql Multimedia Pdf WebEngineWidgets)
 find_package(LayerShellQt REQUIRED)
-# KDE 应用菜单。未安装时仍用桌面文件分类，其他桌面可以编译。
-find_package(KF6Service QUIET)
+# KDE 桌面级快捷键。未安装时跳过，其他桌面仍可编译。
+find_package(KF6GlobalAccel QUIET)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
 pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm>=0.3.3)
@@ -36,6 +36,26 @@ add_custom_command(
     COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" server-header "${WLR_DATA_CONTROL_PROTOCOL}" "${WLR_DATA_CONTROL_SERVER_HEADER}"
     COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${WLR_DATA_CONTROL_PROTOCOL}" "${WLR_DATA_CONTROL_SOURCE}"
     DEPENDS "${WLR_DATA_CONTROL_PROTOCOL}"
+    VERBATIM)
+
+
+# KWin 只实现 ext-data-control-v1，wlroots 系合成器用 wlr-data-control。
+# 两套协议结构几乎一致，运行期按 global 选择，故两套都生成。
+find_file(EXT_DATA_CONTROL_PROTOCOL ext-data-control-v1.xml
+    PATHS
+        "${CMAKE_CURRENT_SOURCE_DIR}/protocols"
+        /usr/share/wayland-protocols/staging/ext-data-control
+    REQUIRED)
+set(EXT_DATA_CONTROL_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/ext-data-control-v1-client-protocol.h")
+set(EXT_DATA_CONTROL_SERVER_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/ext-data-control-v1-server-protocol.h")
+set(EXT_DATA_CONTROL_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/ext-data-control-v1-protocol.c")
+add_custom_command(
+    OUTPUT "${EXT_DATA_CONTROL_HEADER}" "${EXT_DATA_CONTROL_SOURCE}" "${EXT_DATA_CONTROL_SERVER_HEADER}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${EXT_DATA_CONTROL_PROTOCOL}" "${EXT_DATA_CONTROL_HEADER}"
+    COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" server-header "${EXT_DATA_CONTROL_PROTOCOL}" "${EXT_DATA_CONTROL_SERVER_HEADER}"
+    COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${EXT_DATA_CONTROL_PROTOCOL}" "${EXT_DATA_CONTROL_SOURCE}"
+    DEPENDS "${EXT_DATA_CONTROL_PROTOCOL}"
     VERBATIM)
 
 qt_standard_project_setup(REQUIRES 6.8)
@@ -128,6 +148,8 @@ qt_add_executable(hyprendfield
     src/readercontroller.hpp
     ${WLR_DATA_CONTROL_HEADER}
     ${WLR_DATA_CONTROL_SOURCE}
+    ${EXT_DATA_CONTROL_HEADER}
+    ${EXT_DATA_CONTROL_SOURCE}
 )
 
 target_include_directories(hyprendfield PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated" src/endfield)
@@ -336,9 +358,9 @@ target_link_libraries(hyprendfield PRIVATE
     util
 )
 
-if(KF6Service_FOUND)
-    target_link_libraries(hyprendfield PRIVATE KF6::Service)
-    target_compile_definitions(hyprendfield PRIVATE HAVE_KSERVICE)
+if(KF6GlobalAccel_FOUND)
+    target_link_libraries(hyprendfield PRIVATE KF6::GlobalAccel)
+    target_compile_definitions(hyprendfield PRIVATE HAVE_KGLOBALACCEL)
 endif()
 
 target_compile_options(hyprendfield PRIVATE
@@ -451,7 +473,8 @@ if(BUILD_TESTING)
     set_tests_properties(focus_mode PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
     qt_add_executable(hyprendfield_clipboard_tests tests/clipboard.cpp tests/clipboard_wayland_server.hpp
         src/clipboardcontroller.cpp src/clipboardcontroller.hpp
-        ${WLR_DATA_CONTROL_HEADER} ${WLR_DATA_CONTROL_SOURCE} ${WLR_DATA_CONTROL_SERVER_HEADER})
+        ${WLR_DATA_CONTROL_HEADER} ${WLR_DATA_CONTROL_SOURCE} ${WLR_DATA_CONTROL_SERVER_HEADER}
+        ${EXT_DATA_CONTROL_HEADER} ${EXT_DATA_CONTROL_SOURCE} ${EXT_DATA_CONTROL_SERVER_HEADER})
     target_include_directories(hyprendfield_clipboard_tests PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(hyprendfield_clipboard_tests PRIVATE Qt6::Quick Qt6::Test PkgConfig::WAYLAND_CLIENT PkgConfig::WAYLAND_SERVER)
     target_compile_definitions(hyprendfield_clipboard_tests PRIVATE CLIPBOARD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")

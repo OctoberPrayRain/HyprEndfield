@@ -71,6 +71,7 @@ private:
     int m_slave = -1;
     int m_rows = 24, m_columns = 80;
     bool m_alternate = false, m_cursorVisible = true;
+    QString m_shellLabel;
     int m_cursorShape = VTERM_PROP_CURSORSHAPE_BLOCK;
     int m_mouseMode = VTERM_PROP_MOUSE_NONE;
     qint64 m_scrollSerial = 0;
